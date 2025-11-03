@@ -140,6 +140,7 @@ def service_mode(config: Config) -> int:
     publisher: Optional[MQTTPublisher] = None
     device: Optional[GMCDevice] = None
     aggregator: Optional[MovingAverageAggregator] = None
+    reading_count = 0  # Initialize early to avoid UnboundLocalError in finally block
 
     try:
         # Connect to device
@@ -185,8 +186,7 @@ def service_mode(config: Config) -> int:
         logger.info("Service started successfully. Press Ctrl+C to stop.")
         logger.info("=" * 70)
 
-        # Main loop
-        reading_count = 0
+        # Main loop (reading_count already initialized above)
         sampling_interval = sampling_config.get("interval", 1)
         aggregation_interval = sampling_config.get("aggregation_interval", 600)
 

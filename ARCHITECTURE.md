@@ -1,5 +1,7 @@
 # Architektur: GMC Geigerzähler zu MQTT Bridge
 
+> **Hinweis**: Diese Dokumentation wurde zuletzt aktualisiert, um die tatsächliche Implementierung widerzuspiegeln. Die beschriebene Architektur entspricht dem aktuellen Stand des Codes.
+
 ## 1. Überblick
 
 Das System fungiert als Bridge zwischen einem GMC Geigerzähler (USB/TTY) und einem MQTT Broker. Es liest kontinuierlich Messwerte vom Geigerzähler aus und publiziert diese über MQTT, mit automatischer Home Assistant Discovery-Unterstützung.
@@ -21,34 +23,47 @@ Das System fungiert als Bridge zwischen einem GMC Geigerzähler (USB/TTY) und ei
 ### 2.1 Modulstruktur
 
 ```
-gmc_geiger_mqtt/
-├── __init__.py
-├── __main__.py              # Entry point
-├── config.py                # Configuration management
-├── models.py                # Domain models (Reading, DeviceInfo, DeviceConfig)
-├── device/
+gmc-geiger-mqtt/
+├── run.py                   # Entry point (startet die Anwendung)
+├── config.yaml              # Konfigurationsdatei
+├── requirements.txt         # Python-Abhängigkeiten
+├── pytest.ini               # Pytest-Konfiguration (nur tests/ durchsuchen)
+├── src/
 │   ├── __init__.py
-│   ├── protocol.py          # GQ-RFC1801 Protokoll-Implementation
-│   ├── connection.py        # Serielle Verbindung zum GMC Gerät
-│   └── reader.py            # Polling-basiertes Auslesen der Werte
-├── mqtt/
-│   ├── __init__.py
-│   ├── client.py            # MQTT Client Wrapper
-│   ├── publisher.py         # Publishing Logik
-│   └── discovery.py         # Home Assistant Discovery
-├── processing/
-│   ├── __init__.py
-│   └── aggregator.py        # Gleitender Durchschnitt
-├── service.py               # Haupt-Service Orchestrierung
-└── exceptions.py            # Custom Exceptions
+│   ├── main.py              # Hauptlogik (Service Mode & Test Mode)
+│   ├── config.py            # Configuration management
+│   ├── models.py            # Domain models (Reading, DeviceInfo, DeviceConfig, MQTTConfig, AggregatedReading)
+│   ├── gmc_device.py        # GMC Geräte-Kommunikation (monolithisch: Protocol + Connection + Reader)
+│   ├── mqtt/
+│   │   ├── __init__.py
+│   │   ├── client.py        # MQTT Client Wrapper mit Auto-Reconnect
+│   │   ├── publisher.py     # Publishing Logik
+│   │   └── discovery.py     # Home Assistant Discovery
+│   └── processing/
+│       ├── __init__.py
+│       └── aggregator.py    # Gleitender Durchschnitt (MovingAverageAggregator)
+├── tests/
+│   ├── conftest.py          # Pytest-Konfiguration und Fixtures
+│   ├── test_models.py       # Unit Tests für Domain Models
+│   └── test_aggregator.py   # Unit Tests für Aggregator
+└── manual_tests/            # Manuelle Hardware-Tests (nicht in CI/CD)
+    ├── README.md            # Dokumentation für manuelle Tests
+    ├── test_serial.py       # Serielle Verbindung testen
+    ├── test_cpm_debug.py    # CPM-Reading debuggen
+    ├── test_cpm_debug2.py   # Alternative CPM-Tests
+    └── test_mqtt_messages.py # MQTT-Integration testen
 ```
+
+**Hinweis**: Die Implementierung verwendet eine **monolithische Struktur** für die Device-Kommunikation (`gmc_device.py`), anstatt in separate Module aufzuteilen. Dies ist für die Projektgröße angemessen und reduziert unnötige Komplexität.
 
 ### 2.2 Komponenten-Beschreibung
 
-#### 2.2.1 Device Layer (`device/`)
+#### 2.2.1 Device Layer (`gmc_device.py`)
 
-**protocol.py**
-- Implementiert GQ-RFC1801 Kommandos
+Die Device-Kommunikation ist in einer **monolithischen Klasse** `GMCDevice` implementiert, die alle Aspekte der seriellen Kommunikation mit dem GMC-Geigerzähler verwaltet. Dies ist für die Projektgröße angemessen und vermeidet Over-Engineering.
+
+**gmc_device.py**
+- Implementiert GQ-RFC1801 Protokoll direkt in der `GMCDevice`-Klasse
 - Wichtigste Kommandos:
   - `<GETVER>>`: Device Info (Model, Version)
   - `<GETCPM>>`: Liest CPM-Wert (32-bit unsigned integer, 4 bytes)
@@ -63,61 +78,45 @@ cpm = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
 ```
 
 ```python
-class GMCProtocol:
-    """GQ-RFC1801 Protocol implementation."""
+class GMCDevice:
+    """Handler for GMC Geiger counter device communication.
     
+    Kombiniert Protokoll-Implementation, Connection Management und Reading-Logik
+    in einer einzigen Klasse für einfachere Wartung.
+    """
+    
+    # Command constants from GQ-RFC1801.txt
     CMD_GET_VER = b"<GETVER>>"
     CMD_GET_CPM = b"<GETCPM>>"
     CMD_GET_SERIAL = b"<GETSERIAL>>"
     
-    @staticmethod
-    def parse_version(response: bytes) -> tuple[str, str]:
-        """Parse version response into (model, version)."""
-        # Response format: "GMC-800Re1.10" (variable length, no null terminator guaranteed)
-        version_str = response.decode('ascii', errors='ignore').strip()
-        # Parse: model + version number
-        match = re.search(r'^(.*?)(\d+\.\d+)$', version_str)
-        if match:
-            return match.group(1), match.group(2)
-        return version_str, "unknown"
-    
-    @staticmethod
-    def parse_cpm(response: bytes) -> int:
-        """Parse CPM response (4 bytes, MSB first)."""
-        if len(response) != 4:
-            raise ValueError(f"Expected 4 bytes, got {len(response)}")
-        return (response[0] << 24) | (response[1] << 16) | (response[2] << 8) | response[3]
-    
-    @staticmethod
-    def parse_serial(response: bytes) -> str:
-        """Parse serial number (7 bytes)."""
-        if len(response) != 7:
-            raise ValueError(f"Expected 7 bytes, got {len(response)}")
-        return response.hex().upper()
-```
+    def __init__(self, config: DeviceConfig):
+        """
+        Initialize the GMC device handler.
 
-**connection.py**
-- Managed serielle Verbindung
-- Connection pooling und auto-reconnect
-- DTR/RTS Aktivierung für CH340 Chips
-
-```python
-class GMCConnection:
-    """Manages serial connection to GMC device."""
-    
-    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 5.0):
-        self.port = port
-        self.baudrate = baudrate
-        self.timeout = timeout
+        Args:
+            config: Device configuration including port, baudrate, and timeout
+        """
+        self.config = config
         self.serial: Optional[serial.Serial] = None
+        self._device_info: Optional[DeviceInfo] = None
     
     def connect(self) -> None:
-        """Establish connection with proper initialization."""
+        """
+        Establish connection to the GMC device.
+        
+        - Konfiguriert serielle Verbindung (115200 Baud für GMC-800)
+        - Aktiviert DTR/RTS für CH340 USB-Serial Chips
+        - Liest Device-Informationen aus
+        
+        Raises:
+            GMCConnectionError: If connection fails
+        """
         self.serial = serial.Serial(
-            port=self.port,
-            baudrate=self.baudrate,
-            timeout=self.timeout,
-            write_timeout=self.timeout,
+            port=self.config.port,
+            baudrate=self.config.baudrate,
+            timeout=self.config.timeout,
+            write_timeout=self.config.timeout,
             bytesize=serial.EIGHTBITS,
             parity=serial.PARITY_NONE,
             stopbits=serial.STOPBITS_ONE,
@@ -136,132 +135,598 @@ class GMCConnection:
         # Clear buffers
         self.serial.reset_input_buffer()
         self.serial.reset_output_buffer()
+        
+        # Fetch device info
+        self._device_info = self._get_device_info()
     
-    def send_command(self, command: bytes) -> None:
-        """Send command and flush, clearing input buffer first."""
-        self.serial.reset_input_buffer()  # Prevent stale data
+    def disconnect(self) -> None:
+        """Close the connection to the GMC device."""
+        if self.serial and self.serial.is_open:
+            self.serial.close()
+            self.serial = None
+    
+    def is_connected(self) -> bool:
+        """Check if the device is connected."""
+        return self.serial is not None and self.serial.is_open
+    
+    def _send_command(self, command: bytes) -> None:
+        """
+        Send a command to the device.
+        
+        Wichtig: Leert den Input-Buffer VOR dem Senden, um stale data zu vermeiden.
+        
+        Args:
+            command: Command bytes to send
+
+        Raises:
+            GMCCommandError: If sending fails
+        """
+        self._ensure_connected()
+        self.serial.reset_input_buffer()  # Prevent stale data!
         self.serial.write(command)
         self.serial.flush()
     
-    def read_response(self, num_bytes: int, wait_ms: int = 100) -> bytes:
-        """Read exact number of bytes after waiting."""
-        time.sleep(wait_ms / 1000.0)
+    def _read_response(self, num_bytes: int) -> bytes:
+        """
+        Read a fixed number of bytes from the device.
+
+        Args:
+            num_bytes: Number of bytes to read
+
+        Returns:
+            Bytes read from device
+
+        Raises:
+            GMCCommandError: If reading fails or timeout occurs
+        """
+        self._ensure_connected()
         data = self.serial.read(num_bytes)
         if len(data) != num_bytes:
-            raise TimeoutError(f"Expected {num_bytes} bytes, got {len(data)}")
+            raise GMCCommandError(
+                f"Expected {num_bytes} bytes, got {len(data)} bytes"
+            )
         return data
+    
+    def _read_until(self, terminator: bytes = b"\x00", max_bytes: int = 256) -> bytes:
+        """
+        Read bytes until a terminator is found or max_bytes is reached.
+        
+        Verwendet für variable-length Responses wie Version-String.
+
+        Args:
+            terminator: Byte sequence that marks end of data
+            max_bytes: Maximum number of bytes to read
+
+        Returns:
+            Bytes read (excluding terminator)
+
+        Raises:
+            GMCCommandError: If reading fails
+        """
+        self._ensure_connected()
+        data = bytearray()
+        while len(data) < max_bytes:
+            byte = self.serial.read(1)
+            if not byte:
+                break
+            if byte == terminator:
+                break
+            data.extend(byte)
+        return bytes(data)
+    
+    def _get_device_info(self) -> DeviceInfo:
+        """
+        Retrieve device information (version and model).
+        
+        Parsed Version-String (z.B. "GMC-800Re1.10") in Model und Version.
+
+        Returns:
+            DeviceInfo object with device details
+
+        Raises:
+            GMCCommandError: If command fails
+        """
+        # Get version string
+        self._send_command(self.CMD_GET_VER)
+        time.sleep(0.2)  # Wait for device to prepare response
+        
+        version_data = self._read_until(terminator=b"\x00", max_bytes=20)
+        version_str = version_data.decode("ascii", errors="ignore").strip()
+        
+        # Parse version string (format is typically "GMC-800Re1.10")
+        import re
+        match = re.search(r"^(.*?)(\d+\.\d+)$", version_str)
+        if match:
+            model = match.group(1)
+            version = match.group(2)
+        else:
+            model = version_str
+            version = "unknown"
+        
+        # Try to get serial number (not all devices support this)
+        serial_num = None
+        try:
+            self._send_command(self.CMD_GET_SERIAL)
+            time.sleep(0.05)
+            serial_data = self._read_response(7)
+            serial_num = serial_data.hex().upper()
+        except GMCCommandError:
+            pass  # Device does not support serial number query
+        
+        return DeviceInfo(model=model, version=version, serial=serial_num)
+    
+    def get_cpm(self) -> Reading:
+        """
+        Get the current CPM (counts per minute) reading from the device.
+        
+        Sendet <GETCPM>> Kommando und liest 4 Bytes (32-bit unsigned integer, big-endian).
+
+        Returns:
+            Reading object with CPM value and timestamp
+
+        Raises:
+            GMCCommandError: If reading fails
+        """
+        self._ensure_connected()
+        
+        self._send_command(self.CMD_GET_CPM)
+        time.sleep(0.1)  # Small delay for device to prepare response
+        
+        # CPM is returned as 4 bytes (32-bit unsigned integer, big-endian)
+        data = self._read_response(4)
+        cpm = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
+        
+        timestamp = datetime.now()
+        
+        return Reading(cpm=cpm, timestamp=timestamp)
+    
+    @property
+    def device_info(self) -> Optional[DeviceInfo]:
+        """Get cached device information."""
+        return self._device_info
+    
+    def __enter__(self):
+        """Context manager entry - connects to device."""
+        self.connect()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - disconnects from device."""
+        self.disconnect()
+        return False
 ```
 
-**reader.py**
-- Polling-basierter Reader
-- Kein Heartbeat, aktives Pollen alle N Sekunden
-
-```python
-class GMCReader:
-    """Polling-based reader for GMC device."""
-    
-    def __init__(self, connection: GMCConnection, poll_interval: float = 1.0):
-        self.connection = connection
-        self.poll_interval = poll_interval
-        self.protocol = GMCProtocol()
-        self._stop_event = threading.Event()
-        self._reading_callback: Optional[Callable[[Reading], None]] = None
-    
-    def start(self, callback: Callable[[Reading], None]) -> None:
-        """Start polling loop in background thread."""
-        self._reading_callback = callback
-        self._stop_event.clear()
-        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
-        self._thread.start()
-    
-    def stop(self) -> None:
-        """Stop polling loop."""
-        self._stop_event.set()
-        if hasattr(self, '_thread'):
-            self._thread.join(timeout=5.0)
-    
-    def _poll_loop(self) -> None:
-        """Main polling loop."""
-        logger.info("Starting polling loop")
-        
-        while not self._stop_event.is_set():
-            try:
-                # Send GETCPM command
-                self.connection.send_command(self.protocol.CMD_GET_CPM)
-                
-                # Read 4-byte response
-                response = self.connection.read_response(4, wait_ms=200)
-                
-                # Parse CPM value
-                cpm = self.protocol.parse_cpm(response)
-                
-                # Create reading
-                reading = Reading(cpm=cpm, timestamp=datetime.now())
-                
-                # Deliver to callback
-                if self._reading_callback:
-                    self._reading_callback(reading)
-                
-            except Exception as e:
-                logger.error(f"Error reading CPM: {e}")
-                # Continue polling even on error
-            
-            # Wait for next poll interval
-            self._stop_event.wait(self.poll_interval)
-        
-        logger.info("Polling loop stopped")
-```
+**Hinweis zum Polling**: Die Polling-Loop ist **nicht** in der `GMCDevice`-Klasse implementiert, sondern in `main.py` im Service Mode. Dies folgt dem Prinzip der Separation of Concerns - die Device-Klasse ist nur für die Kommunikation zuständig, während die Orchestrierung in der Main-Funktion stattfindet.
 
 #### 2.2.2 Processing Layer (`processing/`)
 
 **aggregator.py**
 - Berechnet gleitenden Durchschnitt über ein konfigurierbares Zeitfenster
-- Thread-safe für concurrent access
+- Automatisches Entfernen alter Samples außerhalb des Zeitfensters
+- Unterstützt konfigurierbare Publikations-Intervalle
 
 ```python
 class MovingAverageAggregator:
-    """Calculates moving average over a time window."""
+    """
+    Aggregates readings over a time window and calculates statistics.
     
-    def __init__(self, window_size: int = 600):  # 10 minutes at 1 sample/sec
-        self.window_size = window_size
-        self.samples: deque[Reading] = deque(maxlen=window_size)
-        self.lock = threading.Lock()
+    Maintains a sliding window of readings and can calculate:
+    - Average CPM
+    - Minimum CPM
+    - Maximum CPM
+    - Average µSv/h
+    - Sample count
+    """
     
-    def add_sample(self, reading: Reading) -> None:
-        """Add a new reading to the window."""
-        with self.lock:
-            self.samples.append(reading)
+    def __init__(
+        self,
+        window_seconds: int = 600,
+        conversion_factor: float = 0.0065,
+    ):
+        """
+        Initialize the aggregator.
+        
+        Args:
+            window_seconds: Time window in seconds (default: 600 = 10 minutes)
+            conversion_factor: CPM to µSv/h conversion factor
+        """
+        self.window_seconds = window_seconds
+        self.conversion_factor = conversion_factor
+        self._samples: deque[Reading] = deque()
+        self._last_aggregation_time: Optional[datetime] = None
     
-    def get_average(self) -> Optional[AggregatedReading]:
-        """Calculate current moving average."""
-        with self.lock:
-            if not self.samples:
-                return None
-            
-            cpm_values = [r.cpm for r in self.samples]
-            
-            return AggregatedReading(
-                cpm_avg=statistics.mean(cpm_values),
-                cpm_min=min(cpm_values),
-                cpm_max=max(cpm_values),
-                sample_count=len(cpm_values),
-                window_minutes=self.window_size / 60,
-                timestamp=datetime.now()
-            )
+    def add_reading(self, reading: Reading) -> None:
+        """
+        Add a reading to the aggregator.
+        
+        Automatically removes old readings outside the time window.
+        
+        Args:
+            reading: Reading to add
+        """
+        self._samples.append(reading)
+        self._clean_old_samples(reading.timestamp)
+    
+    def _clean_old_samples(self, current_time: datetime) -> None:
+        """
+        Remove samples older than the time window.
+        
+        Args:
+            current_time: Current timestamp to calculate window from
+        """
+        cutoff_time = current_time - timedelta(seconds=self.window_seconds)
+        
+        # Remove old samples from the left (oldest)
+        while self._samples and self._samples[0].timestamp < cutoff_time:
+            self._samples.popleft()
+    
+    def get_aggregated(self) -> Optional[AggregatedReading]:
+        """
+        Calculate and return aggregated statistics.
+        
+        Returns:
+            AggregatedReading with statistics, or None if no samples available
+        """
+        if not self._samples:
+            return None
+        
+        # Calculate statistics
+        cpm_values = [reading.cpm for reading in self._samples]
+        cpm_avg = sum(cpm_values) / len(cpm_values)
+        cpm_min = min(cpm_values)
+        cpm_max = max(cpm_values)
+        
+        # Calculate average µSv/h
+        usv_h_avg = cpm_avg * self.conversion_factor
+        
+        # Use the timestamp of the most recent sample
+        timestamp = self._samples[-1].timestamp
+        
+        return AggregatedReading(
+            cpm_avg=cpm_avg,
+            cpm_min=cpm_min,
+            cpm_max=cpm_max,
+            usv_h_avg=usv_h_avg,
+            window_seconds=self.window_seconds,
+            sample_count=len(self._samples),
+            timestamp=timestamp,
+            samples=list(self._samples),
+        )
+    
+    def should_publish(self, current_time: datetime, interval_seconds: int) -> bool:
+        """
+        Check if enough time has passed since last aggregation to publish.
+        
+        Args:
+            current_time: Current timestamp
+            interval_seconds: Minimum interval between publications
+        
+        Returns:
+            True if should publish, False otherwise
+        """
+        if self._last_aggregation_time is None:
+            return True
+        
+        elapsed = (current_time - self._last_aggregation_time).total_seconds()
+        return elapsed >= interval_seconds
+    
+    def mark_published(self, timestamp: datetime) -> None:
+        """
+        Mark that an aggregation was published at the given time.
+        
+        Args:
+            timestamp: Timestamp of publication
+        """
+        self._last_aggregation_time = timestamp
+    
+    def get_sample_count(self) -> int:
+        """
+        Get the current number of samples in the window.
+        
+        Returns:
+            Number of samples
+        """
+        return len(self._samples)
+    
+    def get_window_age(self) -> Optional[timedelta]:
+        """
+        Get the age of the oldest sample in the window.
+        
+        Returns:
+            Timedelta of oldest sample age, or None if no samples
+        """
+        if not self._samples:
+            return None
+        
+        oldest = self._samples[0]
+        newest = self._samples[-1]
+        return newest.timestamp - oldest.timestamp
+    
+    def clear(self) -> None:
+        """Clear all samples from the aggregator."""
+        self._samples.clear()
+        self._last_aggregation_time = None
 ```
+
+**Hinweis**: Die Methoden `should_publish()` und `mark_published()` sind wichtig für die Aggregations-Logik im Service Mode. Sie stellen sicher, dass aggregierte Daten nur in regelmäßigen Intervallen publiziert werden (z.B. alle 10 Minuten), unabhängig davon, wie oft neue Samples hinzugefügt werden.
 
 #### 2.2.3 MQTT Layer (`mqtt/`)
 
 **client.py**
 - Wrapper um paho-mqtt mit auto-reconnect
+- Callback-System für Connection-Events
+- Context Manager Support
+
+```python
+class MQTTClient:
+    """
+    MQTT client wrapper with automatic reconnection and error handling.
+    """
+    
+    def __init__(self, config: MQTTConfig):
+        """Initialize MQTT client."""
+        self.config = config
+        self._client: Optional[mqtt.Client] = None
+        self._connected = False
+        self._on_connect_callback: Optional[Callable] = None
+        self._on_disconnect_callback: Optional[Callable] = None
+    
+    def connect(self) -> None:
+        """
+        Connect to MQTT broker.
+        
+        - Setzt Last Will and Testament (LWT) für Availability
+        - Startet Network Loop in Background Thread
+        - Wartet auf erfolgreiche Verbindung
+        
+        Raises:
+            MQTTClientError: If connection fails
+        """
+        # Create MQTT client with LWT
+        self._client = mqtt.Client(
+            client_id=self.config.client_id,
+            clean_session=True,
+            protocol=mqtt.MQTTv311,
+        )
+        
+        # Set callbacks
+        self._client.on_connect = self._on_connect
+        self._client.on_disconnect = self._on_disconnect
+        
+        # Set username/password if provided
+        if self.config.username:
+            self._client.username_pw_set(self.config.username, self.config.password)
+        
+        # Connect and start loop
+        self._client.connect(self.config.broker, self.config.port, keepalive=60)
+        self._client.loop_start()
+    
+    def disconnect(self) -> None:
+        """Disconnect from MQTT broker."""
+        if self._client:
+            self._client.loop_stop()
+            self._client.disconnect()
+            self._connected = False
+    
+    def publish(
+        self,
+        topic: str,
+        payload: str,
+        qos: int = 0,
+        retain: bool = False,
+    ) -> None:
+        """
+        Publish a message to MQTT broker.
+        
+        Args:
+            topic: MQTT topic
+            payload: Message payload (JSON string)
+            qos: Quality of Service level (0, 1, or 2)
+            retain: Whether to retain the message
+        """
+        if not self.is_connected():
+            raise MQTTClientError("Not connected to MQTT broker")
+        
+        self._client.publish(topic, payload, qos=qos, retain=retain)
+    
+    def subscribe(self, topic: str, qos: int = 0) -> None:
+        """Subscribe to an MQTT topic."""
+        self._client.subscribe(topic, qos=qos)
+    
+    def set_on_connect_callback(self, callback: Callable) -> None:
+        """Set callback to be called when connection is established."""
+        self._on_connect_callback = callback
+    
+    def set_on_disconnect_callback(self, callback: Callable) -> None:
+        """Set callback to be called when connection is lost."""
+        self._on_disconnect_callback = callback
+    
+    def __enter__(self):
+        """Context manager entry - connects to broker."""
+        self.connect()
+        return self
+    
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        """Context manager exit - disconnects from broker."""
+        self.disconnect()
+        return False
+```
 
 **publisher.py**
 - Publiziert Readings als JSON
 - Managed QoS und Retained Messages
+- Startup/Shutdown Sequenzen
+
+```python
+class MQTTPublisher:
+    """
+    Publisher for GMC Geiger counter readings via MQTT.
+    
+    Handles publishing of:
+    - Realtime CPM readings
+    - Aggregated readings (averages over time windows)
+    - Device information
+    - Availability status
+    """
+    
+    def __init__(
+        self,
+        mqtt_client: MQTTClient,
+        config: MQTTConfig,
+        device_info: DeviceInfo,
+        conversion_factor: float = 0.0065,
+    ):
+        """Initialize MQTT publisher."""
+        self.client = mqtt_client
+        self.config = config
+        self.device_info = device_info
+        self.conversion_factor = conversion_factor
+        
+        # Determine device ID from serial or use fallback
+        self.device_id = self._get_device_id()
+    
+    def startup(self) -> None:
+        """
+        Perform startup sequence.
+        
+        Publishes:
+        - Availability (online)
+        - Device information
+        """
+        self.publish_availability(online=True)
+        self.publish_device_info()
+    
+    def shutdown(self) -> None:
+        """
+        Perform shutdown sequence.
+        
+        Publishes:
+        - Availability (offline)
+        """
+        self.publish_availability(online=False)
+    
+    def publish_realtime(self, reading: Reading) -> None:
+        """Publish realtime CPM reading."""
+        topic = self.config.get_topic(self.device_id, "state")
+        
+        payload = {
+            "cpm": reading.cpm,
+            "usv_h": round(reading.to_usv_per_hour(self.conversion_factor), 4),
+            "timestamp": reading.timestamp.isoformat(),
+            "unit": "CPM",
+        }
+        
+        self.client.publish(
+            topic=topic,
+            payload=json.dumps(payload),
+            qos=self.config.qos_realtime,
+            retain=False,
+        )
+    
+    def publish_aggregated(self, aggregated: AggregatedReading) -> None:
+        """Publish aggregated reading (average over time window)."""
+        topic = self.config.get_topic(self.device_id, "state_avg")
+        
+        payload = aggregated.to_dict(self.conversion_factor)
+        
+        self.client.publish(
+            topic=topic,
+            payload=json.dumps(payload),
+            qos=self.config.qos_aggregate,
+            retain=False,
+        )
+    
+    def publish_availability(self, online: bool = True) -> None:
+        """Publish availability status."""
+        topic = self.config.get_topic(self.device_id, "availability")
+        payload = "online" if online else "offline"
+        
+        self.client.publish(
+            topic=topic,
+            payload=payload,
+            qos=1,
+            retain=self.config.retain_availability,
+        )
+    
+    def publish_device_info(self) -> None:
+        """Publish device information (retained message)."""
+        topic = self.config.get_topic(self.device_id, "info")
+        
+        payload = {
+            "model": self.device_info.model,
+            "firmware": self.device_info.version,
+            "serial": self.device_info.serial,
+            "manufacturer": "GQ Electronics",
+        }
+        
+        self.client.publish(
+            topic=topic,
+            payload=json.dumps(payload),
+            qos=self.config.qos_info,
+            retain=self.config.retain_info,
+        )
+```
 
 **discovery.py**
 - Home Assistant MQTT Discovery
 - Registriert Sensoren automatisch
+- Unterstützt Entfernen von Discovery-Nachrichten
+
+```python
+class HomeAssistantDiscovery:
+    """
+    Home Assistant MQTT Discovery implementation.
+    
+    Automatically registers sensors in Home Assistant via MQTT discovery protocol.
+    """
+    
+    def __init__(
+        self,
+        mqtt_client: MQTTClient,
+        config: MQTTConfig,
+        device_info: DeviceInfo,
+        device_id: str,
+    ):
+        """Initialize Home Assistant discovery."""
+        self.client = mqtt_client
+        self.config = config
+        self.device_info = device_info
+        self.device_id = device_id
+    
+    def publish_discovery(self) -> None:
+        """
+        Publish all discovery messages for Home Assistant.
+        
+        Creates sensors for:
+        - Realtime CPM (counts per minute)
+        - Realtime radiation level (µSv/h)
+        - Average CPM
+        - Average radiation level
+        """
+        self._publish_cpm_sensor()
+        self._publish_radiation_sensor()
+        self._publish_avg_cpm_sensor()
+        self._publish_avg_radiation_sensor()
+    
+    def remove_discovery(self) -> None:
+        """
+        Remove discovery messages (publish empty payloads).
+        
+        This removes the sensors from Home Assistant.
+        """
+        sensors = ["cpm", "radiation", "cpm_avg", "radiation_avg"]
+        for sensor in sensors:
+            discovery_topic = (
+                f"{self.config.homeassistant_prefix}/sensor/"
+                f"{self.device_id}/{sensor}/config"
+            )
+            self.client.publish(
+                topic=discovery_topic,
+                payload="",
+                qos=1,
+                retain=True,
+            )
+```
 
 ## 3. Datenfluss
 
@@ -270,13 +735,21 @@ class MovingAverageAggregator:
 │   GMC Device        │
 │   (Serial/USB)      │
 └──────────┬──────────┘
-           │ Polling every 1s
+           │ GMCDevice.get_cpm()
            │ <GETCPM>> → 4 bytes
            ▼
-┌─────────────────────┐
-│   GMCReader         │
-│   (Polling Loop)    │
-└──────────┬──────────┘
+┌─────────────────────────────────────────────────┐
+│   Main Loop (main.py:service_mode)              │
+│   - Polling every 1s                            │
+│   - Orchestriert alle Komponenten               │
+│                                                 │
+│   while not shutdown_requested:                 │
+│       reading = device.get_cpm()                │
+│       publisher.publish_realtime(reading)       │
+│       aggregator.add_reading(reading)           │
+│       if aggregator.should_publish(...):        │
+│           publisher.publish_aggregated(...)     │
+└──────────┬──────────────────────────────────────┘
            │ Reading(cpm, timestamp)
            │
            ├──────────────────────────┐
@@ -303,12 +776,61 @@ class MovingAverageAggregator:
 ```
 
 **Flow Details:**
-1. GMCReader pollt Device jede Sekunde mit `<GETCPM>>`
-2. Parsed Response → `Reading(cpm, timestamp)`
-3. Reading wird an zwei Konsumenten weitergegeben:
-   - MQTT Publisher (sofort publizieren)
-   - Aggregator (für gleitenden Durchschnitt sammeln)
-4. Aggregator berechnet alle 10 Minuten Durchschnitt und publiziert
+1. **Main Loop** (`main.py:service_mode()`) orchestriert den gesamten Ablauf
+2. Pollt `GMCDevice.get_cpm()` jede Sekunde mit `<GETCPM>>`
+3. Parsed Response → `Reading(cpm, timestamp)`
+4. Reading wird verarbeitet:
+   - MQTT Publisher publiziert sofort (Realtime-Topic)
+   - Aggregator fügt Reading zum Zeitfenster hinzu
+5. Aggregator prüft via `should_publish()`, ob 10 Minuten vergangen sind
+6. Falls ja: Aggregierte Werte werden publiziert
+7. Home Assistant empfängt beide Topics via MQTT Integration
+
+**Hinweis**: Die Polling-Loop ist in `main.py` implementiert, nicht in einer separaten `GMCReader`-Klasse. Dies folgt dem Prinzip der Separation of Concerns - die Device-Klasse ist nur für die Kommunikation zuständig, während die Orchestrierung in der Main-Funktion stattfindet.
+
+### 3.1 Test Mode (ohne MQTT)
+
+Die Anwendung unterstützt einen **Test Mode**, um die serielle Kommunikation mit dem GMC-Gerät ohne MQTT-Verbindung zu testen. Dies ist nützlich für:
+- Ersteinrichtung und Hardware-Debugging
+- Überprüfung der seriellen Verbindung
+- Testen verschiedener Baudrates
+- Verifizierung der CPM-Werte
+
+**Aktivierung**: In `config.yaml` `mqtt.enabled: false` setzen
+
+**Ablauf im Test Mode** (`main.py:test_device_reading()`):
+```
+┌─────────────────────┐
+│   GMC Device        │
+│   (Serial/USB)      │
+└──────────┬──────────┘
+           │ get_cpm() every 2s
+           ▼
+┌─────────────────────┐
+│   Test Loop         │
+│   - Liest CPM       │
+│   - Loggt zu stdout │
+│   - Keine MQTT      │
+└─────────────────────┘
+```
+
+**Beispiel-Output**:
+```
+======================================================================
+Starting GMC Geiger test mode
+Device: /dev/ttyUSB0 @ 115200 baud
+======================================================================
+Connected to device: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
+======================================================================
+Starting continuous reading mode (Ctrl+C to stop)...
+======================================================================
+[   1] 03:09:11 | CPM:   19 | µSv/h: 0.1235
+[   2] 03:09:13 | CPM:   22 | µSv/h: 0.1430
+[   3] 03:09:15 | CPM:   21 | µSv/h: 0.1365
+...
+```
+
+**Verwendung**: `python3 run.py` (mit `mqtt.enabled: false` in config.yaml)
 
 ## 4. MQTT Topics und Payloads
 
@@ -441,14 +963,18 @@ sampling:
   aggregation_interval: 600  # publish average every 10 minutes
 
 mqtt:
+  enabled: true              # Set to false for test mode (no MQTT)
   broker: localhost
   port: 1883
-  username: null
-  password: null
+  username: null             # Leave empty for anonymous
+  password: null             # Leave empty for anonymous
   client_id: gmc-geiger-mqtt
   topic_prefix: gmc/geiger
-  qos_realtime: 0
-  qos_aggregate: 1
+  qos_realtime: 0            # QoS for realtime readings (0 = fire and forget)
+  qos_aggregate: 1           # QoS for aggregated readings (1 = at least once)
+  qos_info: 1                # QoS for device info (1 = at least once)
+  retain_info: true          # Retain device info messages
+  retain_availability: true  # Retain availability messages
   homeassistant_discovery: true
   homeassistant_prefix: homeassistant
 
@@ -468,73 +994,118 @@ Alle Config-Werte können per Env-Var überschrieben werden:
 - `GMC_MQTT_USERNAME`
 - `GMC_MQTT_PASSWORD`
 
-## 7. Device Startup und Shutdown Sequenzen
+## 7. Service Startup und Shutdown Sequenzen
 
-### 7.1 Startup-Sequenz (Polling Mode)
+Die Startup- und Shutdown-Logik ist in `main.py` in der `service_mode()` Funktion implementiert.
+
+### 7.1 Startup-Sequenz (Service Mode)
 
 ```python
-def initialize_device(config: DeviceConfig) -> GMCDevice:
-    """Initialize GMC device with polling mode."""
+def service_mode(config: Config) -> int:
+    """Service mode: Read from device, aggregate, and publish via MQTT."""
     
-    # 1. Open serial connection
-    connection = GMCConnection(
-        port=config.port,
-        baudrate=config.baudrate,
-        timeout=config.timeout
+    # 1. Load configuration
+    device_config = config.get_device_config()
+    mqtt_config = config.get_mqtt_config()
+    sampling_config = config.get_sampling_config()
+    conversion_factor = config.get_conversion_factor()
+    
+    # 2. Connect to GMC device
+    device = GMCDevice(device_config)
+    device.connect()
+    # Device info is fetched automatically in connect()
+    
+    # 3. Connect to MQTT broker
+    mqtt_client = MQTTClient(mqtt_config)
+    mqtt_client.connect()
+    
+    # 4. Initialize publisher
+    publisher = MQTTPublisher(
+        mqtt_client=mqtt_client,
+        config=mqtt_config,
+        device_info=device.device_info,
+        conversion_factor=conversion_factor,
     )
-    connection.connect()
     
-    # 2. Get device info
-    connection.send_command(GMCProtocol.CMD_GET_VER)
-    version_data = connection.read_response(14, wait_ms=200)
-    model, version = GMCProtocol.parse_version(version_data)
+    # 5. Perform startup sequence (publish availability + device info)
+    publisher.startup()
     
-    # 3. Try to get serial (optional)
-    try:
-        connection.send_command(GMCProtocol.CMD_GET_SERIAL)
-        serial_data = connection.read_response(7, wait_ms=100)
-        serial = GMCProtocol.parse_serial(serial_data)
-    except Exception:
-        serial = None
+    # 6. Initialize Home Assistant Discovery (if enabled)
+    if mqtt_config.homeassistant_discovery:
+        discovery = HomeAssistantDiscovery(
+            mqtt_client=mqtt_client,
+            config=mqtt_config,
+            device_info=device.device_info,
+            device_id=publisher.device_id,
+        )
+        discovery.publish_discovery()
     
-    # 4. Create device info
-    device_info = DeviceInfo(model=model, version=version, serial=serial)
+    # 7. Initialize aggregator
+    aggregator = MovingAverageAggregator(
+        window_seconds=sampling_config.get("aggregation_window", 600),
+        conversion_factor=conversion_factor,
+    )
     
-    # 5. Create device with reader
-    device = GMCDevice(connection, device_info)
-    
-    return device
+    # 8. Start main polling loop
+    # (siehe Abschnitt 3 - Datenfluss)
 ```
 
 **Key Points:**
-- Einfacher Startup, keine komplexe State-Machine
-- Buffer wird vor jedem Command gecleart
-- Device Info als erstes holen für Discovery
+- Alle Komponenten werden einzeln initialisiert
+- Device Info wird automatisch beim Connect geholt
+- Publisher ruft `startup()` auf, um Availability und Device Info zu publizieren
+- Home Assistant Discovery wird nach Device-Connect publiziert (damit korrekte Device Info vorhanden)
+- Aggregator wird mit konfigurierbarem Zeitfenster initialisiert
+- Keine separate Reader-Klasse - Polling direkt in Main Loop
 
 ### 7.2 Shutdown-Sequenz
 
 ```python
-def shutdown_device(device: GMCDevice) -> None:
-    """Clean shutdown of device."""
+def service_mode(config: Config) -> int:
+    """Service mode with cleanup in finally block."""
     
-    logger.info("Shutting down GMC device")
+    try:
+        # ... main loop ...
     
-    # 1. Stop reader
-    if device.reader:
-        device.reader.stop()
+    except KeyboardInterrupt:
+        logger.info("Interrupted by user (Ctrl+C)")
     
-    # 2. Close serial connection
-    if device.connection and device.connection.serial:
-        try:
-            device.connection.serial.close()
-            logger.info("Serial connection closed")
-        except Exception as e:
-            logger.error(f"Error closing serial: {e}")
+    finally:
+        # Cleanup sequence
+        logger.info("Performing shutdown sequence...")
+        
+        # 1. Publish offline status
+        if publisher:
+            try:
+                publisher.shutdown()  # Publishes availability=offline
+            except Exception as e:
+                logger.error(f"Error during publisher shutdown: {e}")
+        
+        # 2. Disconnect MQTT
+        if mqtt_client:
+            try:
+                mqtt_client.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting MQTT: {e}")
+        
+        # 3. Disconnect device
+        if device:
+            try:
+                device.disconnect()
+            except Exception as e:
+                logger.error(f"Error disconnecting device: {e}")
+        
+        logger.info("Shutdown complete")
+    
+    return 0
 ```
 
 **Key Points:**
-- Kein spezieller Cleanup notwendig (kein Heartbeat zu deaktivieren)
-- Einfach Reader stoppen und Serial schließen
+- Shutdown wird im `finally` Block durchgeführt (garantiert Ausführung)
+- Reihenfolge: Publisher (offline status) → MQTT → Device
+- Jeder Schritt ist in try/except, damit ein Fehler nicht den Rest blockiert
+- Kein spezieller Device-Cleanup notwendig (kein Heartbeat zu deaktivieren)
+- Publisher.shutdown() publiziert "offline" Status mit retained flag
 
 ## 8. Error Handling und Resilienz
 
@@ -577,7 +1148,40 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 ## 9. Paket-Struktur und Deployment
 
-### 9.1 pyproject.toml
+### 9.1 Dependency Management
+
+**Aktuell**: Die Anwendung verwendet `requirements.txt` für Dependency Management:
+
+```txt
+# Core dependencies
+pyserial>=3.5
+pyyaml>=6.0
+paho-mqtt>=1.6.1
+
+# Testing dependencies (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0
+```
+
+**Installation mit uv**:
+```bash
+# Create virtual environment
+uv venv
+
+# Activate venv
+source .venv/bin/activate  # Linux/Mac
+# Or: .venv\Scripts\activate  # Windows
+
+# Install dependencies
+uv pip install -r requirements.txt
+```
+
+**Entry Point**: Die Anwendung wird über `run.py` gestartet:
+```bash
+python3 run.py
+```
+
+**Zukünftig (optional)**: Migration zu `pyproject.toml` für moderneren Python-Paketbau:
 
 ```toml
 [project]
@@ -588,22 +1192,27 @@ requires-python = ">=3.8"
 dependencies = [
     "pyserial>=3.5",
     "pyyaml>=6.0",
-    "paho-mqtt>=1.6.0",
+    "paho-mqtt>=1.6.1",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0.0",
-    "black>=23.0.0",
-    "mypy>=1.0.0",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
 ]
 
 [project.scripts]
-gmc-geiger-mqtt = "gmc_geiger_mqtt.__main__:main"
+gmc-geiger-mqtt = "src.main:main"
 
 [build-system]
-requires = ["setuptools>=65.0"]
+requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
+```
+
+Dies würde ermöglichen:
+```bash
+pip install -e .
+gmc-geiger-mqtt  # Direkt ausführbar
 ```
 
 ### 9.2 Systemd Service (Linux)
@@ -640,21 +1249,72 @@ CMD ["gmc-geiger-mqtt", "--config", "/config/config.yaml"]
 
 ### 10.1 Unit Tests
 
-Nur für kritische Business Logic:
-- `GMCProtocol.parse_cpm()` - CPM Parsing
-- `GMCProtocol.parse_version()` - Version Parsing
-- `MovingAverageAggregator` - Durchschnittsberechnung
-- Config Validation
+Die Anwendung hat Unit Tests für kritische Business Logic:
+
+**Vorhandene Tests** (in `tests/`):
+
+- **`conftest.py`**: Pytest-Konfiguration und gemeinsame Fixtures
+- **`test_models.py`**: Tests für Domain Models
+  - `Reading` Validierung
+  - `DeviceInfo` Parsing
+  - `DeviceConfig` Validierung
+  - `MQTTConfig` Validierung
+  - `AggregatedReading.to_dict()` Format
+  
+- **`test_aggregator.py`**: Tests für `MovingAverageAggregator`
+  - `add_reading()` - Hinzufügen von Samples
+  - `get_aggregated()` - Berechnung von Durchschnitt, Min, Max
+  - `_clean_old_samples()` - Automatisches Entfernen alter Samples
+  - `should_publish()` - Publikations-Timing
+  - `mark_published()` - Tracking der letzten Publikation
+  - `get_sample_count()` - Sample-Anzahl
+  - `get_window_age()` - Fenster-Alter
+  - `clear()` - Zurücksetzen des Aggregators
+  - `to_dict()` Format-Validierung
+
+**Test-Ausführung**:
+```bash
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run all tests
+pytest tests/
+
+# Run with coverage
+pytest --cov=src tests/
+
+# Run specific test file
+pytest tests/test_models.py
+pytest tests/test_aggregator.py
+```
 
 **Keine Tests für:**
-- Serial Communication (Integration Test Territory)
-- MQTT Publishing (würde Mock-Broker brauchen)
-- Service Orchestrierung (zu komplex)
+- Serial Communication (Integration Test Territory, benötigt Hardware)
+- MQTT Publishing (würde Mock-Broker benötigen)
+- Service Orchestrierung (zu komplex, manuelles Testing ausreichend)
+- `GMCDevice`-Klasse (benötigt echtes Hardware-Device)
 
 ### 10.2 Integration Tests (Optional, minimal)
 
-- `test_device_connection.py`: Test mit echtem Device (manuell)
-- `test_mqtt_flow.py`: Test mit lokalem Mosquitto (optional)
+**Manuelle Hardware-Tests** (in `manual_tests/`):
+
+Die folgenden Tests benötigen ein physisches GMC-Gerät und sind **nicht** Teil der automatisierten Test-Suite:
+
+- `test_serial.py`: Test serielle Verbindung mit verschiedenen Baudrates
+- `test_cpm_debug.py`: Detailliertes CPM-Reading-Debugging
+- `test_cpm_debug2.py`: Alternative CPM-Reading-Tests
+- `test_mqtt_messages.py`: Testen von MQTT-Nachrichten (benötigt laufenden Broker)
+
+**Ausführung manueller Tests**:
+```bash
+# Direkt ausführen (benötigt Hardware)
+python3 manual_tests/test_serial.py
+
+# Mit sg für serial port access
+sg dialout -c "python3 manual_tests/test_serial.py"
+```
+
+**Wichtig**: Diese Tests werden durch `pytest` **nicht** automatisch ausgeführt, da sie Hardware benötigen. Die `pytest.ini` Konfiguration schließt `manual_tests/` explizit aus und durchsucht nur `tests/`.
 
 ## 11. Logging
 

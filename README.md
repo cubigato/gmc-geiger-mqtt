@@ -147,6 +147,7 @@ Press Ctrl+C to stop.
 gmc-geiger-mqtt/
 ├── config.yaml           # Configuration file
 ├── requirements.txt      # Python dependencies
+├── pytest.ini           # Pytest configuration (automated tests only)
 ├── run.py               # Main executable
 ├── src/
 │   ├── __init__.py
@@ -160,9 +161,15 @@ gmc-geiger-mqtt/
 │   │   └── discovery.py # Home Assistant MQTT discovery
 │   └── processing/      # Data processing
 │       └── aggregator.py # Moving average aggregator
-├── tests/               # Unit tests
+├── tests/               # Automated unit tests (no hardware required)
+│   ├── conftest.py
 │   ├── test_models.py
 │   └── test_aggregator.py
+├── manual_tests/        # Manual hardware tests (excluded from pytest)
+│   ├── README.md        # Documentation for manual tests
+│   ├── test_serial.py   # Serial communication tests
+│   ├── test_cpm_debug.py # CPM reading debugging
+│   └── test_mqtt_messages.py # MQTT integration tests
 ├── ARCHITECTURE.md      # Detailed architecture documentation
 └── GQ-RFC1801.txt       # GMC protocol specification
 ```
@@ -295,40 +302,57 @@ No manual configuration needed - sensors appear automatically in Home Assistant!
 
 ## Testing
 
-### Unit Tests
+### Automated Unit Tests
 
-Run the unit test suite:
+The project has automated unit tests that run **without hardware** (suitable for CI/CD):
 
 ```bash
 # Activate virtual environment
 source .venv/bin/activate
 
-# Run all tests
-pytest tests/
+# Run all automated tests
+pytest
 
 # Run with coverage
-pytest --cov=src tests/
+pytest --cov=src
 
 # Run specific test file
 pytest tests/test_models.py
 pytest tests/test_aggregator.py
 ```
 
-### Manual Testing
+**What's tested:**
+- Domain models (`Reading`, `DeviceInfo`, `MQTTConfig`, etc.)
+- `MovingAverageAggregator` logic
+- Data validation and transformations
 
-Test individual components:
+**Note:** These tests do **not** require a physical GMC device and will run in CI/CD environments.
+
+### Manual Hardware Tests
+
+Manual tests that require a **physical GMC device** are located in `manual_tests/`:
 
 ```bash
-# Test serial with different baudrates
-sg dialout -c "python3 test_serial.py"
+# Test serial communication with different baudrates
+sg dialout -c "python3 manual_tests/test_serial.py"
 
-# Test CPM reading details
-sg dialout -c "python3 test_cpm_debug.py"
+# Test CPM reading with detailed debugging
+sg dialout -c "python3 manual_tests/test_cpm_debug.py"
+
+# Test MQTT integration (requires MQTT broker)
+sg dialout -c "python3 manual_tests/test_mqtt_messages.py"
 ```
 
-### MQTT Testing
+**Important:** These tests are **excluded** from `pytest` (see `pytest.ini`) and must be run manually. They require:
+- Physical GMC device connected to `/dev/ttyUSB0`
+- User in `dialout` group
+- For MQTT tests: Running MQTT broker
 
-Monitor MQTT messages:
+See [`manual_tests/README.md`](manual_tests/README.md) for detailed documentation.
+
+### MQTT Monitoring
+
+Monitor MQTT messages in real-time:
 
 ```bash
 # Subscribe to all topics

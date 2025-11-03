@@ -12,6 +12,17 @@ from ..models import MQTTConfig
 logger = logging.getLogger(__name__)
 
 
+# MQTT Connection Return Codes
+MQTT_ERROR_MESSAGES = {
+    0: "Connection successful",
+    1: "Connection refused - incorrect protocol version",
+    2: "Connection refused - invalid client identifier",
+    3: "Connection refused - server unavailable",
+    4: "Connection refused - bad username or password",
+    5: "Connection refused - not authorized",
+}
+
+
 class MQTTClientError(Exception):
     """Base exception for MQTT client errors."""
 
@@ -51,6 +62,14 @@ class MQTTClient:
                 f"Connecting to MQTT broker at {self.config.broker}:{self.config.port}"
             )
 
+            # Debug: Log authentication info (password masked)
+            if self.config.username:
+                logger.debug(
+                    f"Using MQTT authentication: username='{self.config.username}'"
+                )
+            else:
+                logger.debug("Using anonymous MQTT connection (no username/password)")
+
             # Create MQTT client
             self._client = mqtt.Client(
                 client_id=self.config.client_id,
@@ -65,6 +84,9 @@ class MQTTClient:
 
             # Set username and password if provided
             if self.config.username:
+                logger.debug(
+                    f"Setting MQTT credentials for user: {self.config.username}"
+                )
                 self._client.username_pw_set(self.config.username, self.config.password)
 
             # Set Last Will and Testament (LWT) for availability
@@ -206,7 +228,19 @@ class MQTTClient:
                 except Exception as e:
                     logger.error(f"Error in on_connect callback: {e}")
         else:
-            logger.error(f"MQTT connection failed with code {rc}")
+            error_msg = MQTT_ERROR_MESSAGES.get(rc, f"Unknown error code {rc}")
+            logger.error(f"MQTT connection failed: {error_msg} (code {rc})")
+
+            # Additional helpful hints for common errors
+            if rc == 4:
+                logger.error("Check username and password in config.yaml")
+            elif rc == 5:
+                logger.error("Check MQTT broker ACL/permissions for this user")
+            elif rc == 3:
+                logger.error(
+                    f"MQTT broker at {self.config.broker}:{self.config.port} is unavailable"
+                )
+
             self._connected = False
 
     def _on_disconnect(self, client, userdata, rc):
