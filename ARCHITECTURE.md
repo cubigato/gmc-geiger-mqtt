@@ -8,12 +8,13 @@ Das System fungiert als Bridge zwischen einem GMC Geigerzähler (USB/TTY) und ei
 
 - **Gerät**: GMC-800 v1.10 (primär), kompatibel mit neueren GMC Geräten (GMC-500/600 Serie)
 - **Protokoll**: GQ-RFC1801
-- **Messintervall**: 1 Sekunde (CPS-Wert)
+- **Messintervall**: 1 Sekunde (CPM-Wert)
 - **Reporting**: 
-  - Echtzeit: Jede Sekunde den aktuellen CPS-Wert
+  - Echtzeit: Jede Sekunde den aktuellen CPM-Wert
   - Aggregiert: Alle 10 Minuten gleitender Durchschnitt
 - **Integration**: Home Assistant Auto-Discovery
 - **Deployment**: Lang laufender Service (kein One-Shot-Script)
+- **Mode**: Polling-Only (kein Heartbeat)
 
 ## 2. Komponentenarchitektur
 
@@ -24,11 +25,12 @@ gmc_geiger_mqtt/
 ├── __init__.py
 ├── __main__.py              # Entry point
 ├── config.py                # Configuration management
+├── models.py                # Domain models (Reading, DeviceInfo, DeviceConfig)
 ├── device/
 │   ├── __init__.py
 │   ├── protocol.py          # GQ-RFC1801 Protokoll-Implementation
 │   ├── connection.py        # Serielle Verbindung zum GMC Gerät
-│   └── reader.py            # Kontinuierliches Auslesen der Werte
+│   └── reader.py            # Polling-basiertes Auslesen der Werte
 ├── mqtt/
 │   ├── __init__.py
 │   ├── client.py            # MQTT Client Wrapper
@@ -48,568 +50,529 @@ gmc_geiger_mqtt/
 **protocol.py**
 - Implementiert GQ-RFC1801 Kommandos
 - Wichtigste Kommandos:
-  - `<GETVER>>`: Hardware-Modell und Version abrufen
-  - `<HEARTBEAT1>>`: Aktiviert kontinuierliches Senden von CPS-Werten (1 Hz)
-  - `<HEARTBEAT0>>`: Deaktiviert Heartbeat-Modus
-  - `<GETCPS>>`: Manuelles Abrufen von CPS-Werten (Polling-Modus Fallback)
-- Kapselung der Low-Level Protokoll-Details
-- Bytestring-Handling und Response-Parsing
+  - `<GETVER>>`: Device Info (Model, Version)
+  - `<GETCPM>>`: Liest CPM-Wert (32-bit unsigned integer, 4 bytes)
+  - `<GETSERIAL>>`: Seriennummer (falls unterstützt)
+
+**Wichtig**: CPM wird als 4 Bytes zurückgegeben (MSB first):
+```python
+# Response: 4 bytes
+# Example: 0x00 0x00 0x00 0x1C = 28 CPM
+data = serial.read(4)
+cpm = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
+```
+
+```python
+class GMCProtocol:
+    """GQ-RFC1801 Protocol implementation."""
+    
+    CMD_GET_VER = b"<GETVER>>"
+    CMD_GET_CPM = b"<GETCPM>>"
+    CMD_GET_SERIAL = b"<GETSERIAL>>"
+    
+    @staticmethod
+    def parse_version(response: bytes) -> tuple[str, str]:
+        """Parse version response into (model, version)."""
+        # Response format: "GMC-800Re1.10" (variable length, no null terminator guaranteed)
+        version_str = response.decode('ascii', errors='ignore').strip()
+        # Parse: model + version number
+        match = re.search(r'^(.*?)(\d+\.\d+)$', version_str)
+        if match:
+            return match.group(1), match.group(2)
+        return version_str, "unknown"
+    
+    @staticmethod
+    def parse_cpm(response: bytes) -> int:
+        """Parse CPM response (4 bytes, MSB first)."""
+        if len(response) != 4:
+            raise ValueError(f"Expected 4 bytes, got {len(response)}")
+        return (response[0] << 24) | (response[1] << 16) | (response[2] << 8) | response[3]
+    
+    @staticmethod
+    def parse_serial(response: bytes) -> str:
+        """Parse serial number (7 bytes)."""
+        if len(response) != 7:
+            raise ValueError(f"Expected 7 bytes, got {len(response)}")
+        return response.hex().upper()
+```
 
 **connection.py**
-- Verwaltet serielle Verbindung zum Gerät
-- Serial Port Setup (115200 baud, 8N1)
-- DTR/RTS Pin-Management (für CH340 Chips)
-- Connection Health Monitoring
-- Automatische Reconnect-Logik mit Backoff
-- Thread-safe Operations
+- Managed serielle Verbindung
+- Connection pooling und auto-reconnect
+- DTR/RTS Aktivierung für CH340 Chips
+
+```python
+class GMCConnection:
+    """Manages serial connection to GMC device."""
+    
+    def __init__(self, port: str, baudrate: int = 115200, timeout: float = 5.0):
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.serial: Optional[serial.Serial] = None
+    
+    def connect(self) -> None:
+        """Establish connection with proper initialization."""
+        self.serial = serial.Serial(
+            port=self.port,
+            baudrate=self.baudrate,
+            timeout=self.timeout,
+            write_timeout=self.timeout,
+            bytesize=serial.EIGHTBITS,
+            parity=serial.PARITY_NONE,
+            stopbits=serial.STOPBITS_ONE,
+            rtscts=False,
+            dsrdtr=False,
+            xonxoff=False,
+        )
+        
+        # DTR/RTS activation required for CH340 chips
+        self.serial.setDTR(True)
+        self.serial.setRTS(True)
+        
+        # Wait for device initialization
+        time.sleep(0.5)
+        
+        # Clear buffers
+        self.serial.reset_input_buffer()
+        self.serial.reset_output_buffer()
+    
+    def send_command(self, command: bytes) -> None:
+        """Send command and flush, clearing input buffer first."""
+        self.serial.reset_input_buffer()  # Prevent stale data
+        self.serial.write(command)
+        self.serial.flush()
+    
+    def read_response(self, num_bytes: int, wait_ms: int = 100) -> bytes:
+        """Read exact number of bytes after waiting."""
+        time.sleep(wait_ms / 1000.0)
+        data = self.serial.read(num_bytes)
+        if len(data) != num_bytes:
+            raise TimeoutError(f"Expected {num_bytes} bytes, got {len(data)}")
+        return data
+```
 
 **reader.py**
-- **HEARTBEAT-Modus (Standard)**: Kontinuierliches Lesen von Push-Daten
-  - Gerät sendet automatisch alle 1s einen 4-Byte CPS-Wert
-  - Blocking Read mit Timeout-Handling
-  - Buffer-Overflow Protection
-- **Polling-Modus (Fallback)**: Periodisches Senden von `<GETCPS>>`
-  - Timer-basiert (1 Hz)
-  - Request-Response Handling
-- Asynchrone Event-basierte Architektur oder Threading
-- Queue für gemessene Werte
-- Error Recovery bei Lesefehler
-- Modus-Switch bei wiederholten Read-Fehlern
+- Polling-basierter Reader
+- Kein Heartbeat, aktives Pollen alle N Sekunden
 
-```
-┌──────────────────┐
-│  GMC Geigerzähler │
-│    (USB/TTY)      │
-└─────────┬─────────┘
-          │ 1. Startup: <HEARTBEAT1>>
-          │ Serial (115200 baud)
-          │ 2. Push: 4 Bytes CPS (1 Hz)
-          ▼
-┌──────────────────────┐
-│   Device Reader      │
-│  (reader.py)         │
-│  HEARTBEAT Mode      │
-└─────────┬────────────┘
-          │ CPS Value
-          ├──────────────────────────────┐
-          │                              │
-          ▼                              ▼
-┌──────────────────────┐    ┌────────────────────────┐
-│  MQTT Publisher      │    │   Aggregator           │
-│  (Echtzeit)          │    │   (10 Min Window)      │
-└─────────┬────────────┘    └────────────┬───────────┘
-          │                              │
-          │ Every 1s                     │ Every 10 min
-          │                              │
-          ▼                              ▝
-┌──────────────────────────────────────────────────────┐
-│              MQTT Broker                              │
-└─────────┬────────────────────────────────────────────┘
-          │
-          │ Subscribe
-          ▼
-┌──────────────────────┐
-│  Home Assistant      │
-└──────────────────────┘
-
-Shutdown: <HEARTBEAT0>> → Clean State
+```python
+class GMCReader:
+    """Polling-based reader for GMC device."""
+    
+    def __init__(self, connection: GMCConnection, poll_interval: float = 1.0):
+        self.connection = connection
+        self.poll_interval = poll_interval
+        self.protocol = GMCProtocol()
+        self._stop_event = threading.Event()
+        self._reading_callback: Optional[Callable[[Reading], None]] = None
+    
+    def start(self, callback: Callable[[Reading], None]) -> None:
+        """Start polling loop in background thread."""
+        self._reading_callback = callback
+        self._stop_event.clear()
+        self._thread = threading.Thread(target=self._poll_loop, daemon=True)
+        self._thread.start()
+    
+    def stop(self) -> None:
+        """Stop polling loop."""
+        self._stop_event.set()
+        if hasattr(self, '_thread'):
+            self._thread.join(timeout=5.0)
+    
+    def _poll_loop(self) -> None:
+        """Main polling loop."""
+        logger.info("Starting polling loop")
+        
+        while not self._stop_event.is_set():
+            try:
+                # Send GETCPM command
+                self.connection.send_command(self.protocol.CMD_GET_CPM)
+                
+                # Read 4-byte response
+                response = self.connection.read_response(4, wait_ms=200)
+                
+                # Parse CPM value
+                cpm = self.protocol.parse_cpm(response)
+                
+                # Create reading
+                reading = Reading(cpm=cpm, timestamp=datetime.now())
+                
+                # Deliver to callback
+                if self._reading_callback:
+                    self._reading_callback(reading)
+                
+            except Exception as e:
+                logger.error(f"Error reading CPM: {e}")
+                # Continue polling even on error
+            
+            # Wait for next poll interval
+            self._stop_event.wait(self.poll_interval)
+        
+        logger.info("Polling loop stopped")
 ```
 
 #### 2.2.2 Processing Layer (`processing/`)
 
 **aggregator.py**
-- Sammelt CPS-Messungen in einem Zeitfenster
-- Berechnet gleitenden Durchschnitt
-- Zeitfenster: 10 Minuten (600 Messwerte bei 1 Hz)
-- Implementierung: Sliding Window mit Circular Buffer oder deque
-- Statistische Zusatzwerte (optional):
-  - Minimum, Maximum
-  - Standardabweichung
-  - Median
+- Berechnet gleitenden Durchschnitt über ein konfigurierbares Zeitfenster
+- Thread-safe für concurrent access
+
+```python
+class MovingAverageAggregator:
+    """Calculates moving average over a time window."""
+    
+    def __init__(self, window_size: int = 600):  # 10 minutes at 1 sample/sec
+        self.window_size = window_size
+        self.samples: deque[Reading] = deque(maxlen=window_size)
+        self.lock = threading.Lock()
+    
+    def add_sample(self, reading: Reading) -> None:
+        """Add a new reading to the window."""
+        with self.lock:
+            self.samples.append(reading)
+    
+    def get_average(self) -> Optional[AggregatedReading]:
+        """Calculate current moving average."""
+        with self.lock:
+            if not self.samples:
+                return None
+            
+            cpm_values = [r.cpm for r in self.samples]
+            
+            return AggregatedReading(
+                cpm_avg=statistics.mean(cpm_values),
+                cpm_min=min(cpm_values),
+                cpm_max=max(cpm_values),
+                sample_count=len(cpm_values),
+                window_minutes=self.window_size / 60,
+                timestamp=datetime.now()
+            )
+```
 
 #### 2.2.3 MQTT Layer (`mqtt/`)
 
 **client.py**
-- Paho-MQTT Client Wrapper
-- Connection Management
-- Last Will & Testament (LWT) für Verfügbarkeitsstatus
-- Reconnect-Logik
-- QoS Management
+- Wrapper um paho-mqtt mit auto-reconnect
 
 **publisher.py**
-- Publish von Echtzeit-Messwerten (jede Sekunde)
-- Publish von aggregierten Werten (alle 10 Minuten)
-- Publish von Gerätestatus (online/offline)
-- JSON Payload Formatierung
+- Publiziert Readings als JSON
+- Managed QoS und Retained Messages
 
 **discovery.py**
-- Home Assistant MQTT Discovery Implementation
-- Discovery-Nachrichten für:
-  - Echtzeit CPS Sensor
-  - Durchschnitts CPS Sensor
-  - Geräte-Informationen (Modell, Version, Hersteller)
-- Retain-Flag für Discovery-Nachrichten
-
-#### 2.2.4 Configuration (`config.py`)
-
-- Laden der `config.yaml`
-- Validation der Konfiguration
-- Default-Werte
-- Environment Variable Overrides (optional, für Secrets)
-
-#### 2.2.5 Service Orchestrierung (`service.py`)
-
-- Hauptevent-Loop
-- Lifecycle Management:
-  - Startup: Initialisierung aller Komponenten
-  - Running: Koordination zwischen Device Reader, Aggregator und MQTT
-  - Shutdown: Graceful Cleanup
-- Signal Handling (SIGTERM, SIGINT)
-- Logging Setup
+- Home Assistant MQTT Discovery
+- Registriert Sensoren automatisch
 
 ## 3. Datenfluss
 
 ```
-┌──────────────────┐
-│  GMC Geigerzähler │
-│    (USB/TTY)      │
-└─────────┬─────────┘
-          │ Serial (115200 baud)
-          │ <GETCPS>> (1 Hz)
-          ▼
-┌──────────────────────┐
-│   Device Reader      │
-│  (reader.py)         │
-└─────────┬────────────┘
-          │ CPS Value
-          ├──────────────────────────────┐
-          │                              │
-          ▼                              ▼
-┌──────────────────────┐    ┌────────────────────────┐
-│  MQTT Publisher      │    │   Aggregator           │
-│  (Echtzeit)          │    │   (10 Min Window)      │
-└─────────┬────────────┘    └────────────┬───────────┘
-          │                              │
-          │ Every 1s                     │ Every 10 min
-          │                              │
-          ▼                              ▼
-┌──────────────────────────────────────────────────────┐
-│              MQTT Broker                              │
-└─────────┬────────────────────────────────────────────┘
-          │
-          │ Subscribe
-          ▼
-┌──────────────────────┐
-│  Home Assistant      │
-└──────────────────────┘
+┌─────────────────────┐
+│   GMC Device        │
+│   (Serial/USB)      │
+└──────────┬──────────┘
+           │ Polling every 1s
+           │ <GETCPM>> → 4 bytes
+           ▼
+┌─────────────────────┐
+│   GMCReader         │
+│   (Polling Loop)    │
+└──────────┬──────────┘
+           │ Reading(cpm, timestamp)
+           │
+           ├──────────────────────────┐
+           │                          │
+           ▼                          ▼
+┌─────────────────────┐    ┌─────────────────────┐
+│  MQTT Publisher     │    │  Aggregator         │
+│  (Realtime)         │    │  (Moving Avg)       │
+│                     │    │                     │
+│  Publish every 1s   │    │  Publish every 10m  │
+└──────────┬──────────┘    └──────────┬──────────┘
+           │                          │
+           └────────┬─────────────────┘
+                    ▼
+           ┌─────────────────────┐
+           │   MQTT Broker       │
+           └──────────┬──────────┘
+                      │
+                      ▼
+           ┌─────────────────────┐
+           │  Home Assistant     │
+           │  (MQTT Integration) │
+           └─────────────────────┘
 ```
+
+**Flow Details:**
+1. GMCReader pollt Device jede Sekunde mit `<GETCPM>>`
+2. Parsed Response → `Reading(cpm, timestamp)`
+3. Reading wird an zwei Konsumenten weitergegeben:
+   - MQTT Publisher (sofort publizieren)
+   - Aggregator (für gleitenden Durchschnitt sammeln)
+4. Aggregator berechnet alle 10 Minuten Durchschnitt und publiziert
 
 ## 4. MQTT Topics und Payloads
 
 ### 4.1 Topic-Schema
 
-Base Topic: `gmc_geiger/{device_id}/`
+```
+gmc/geiger/<device_id>/state          # Realtime CPM
+gmc/geiger/<device_id>/state_avg      # 10-min average
+gmc/geiger/<device_id>/availability   # Online/Offline
+gmc/geiger/<device_id>/info           # Device info (retained)
+```
 
-- `gmc_geiger/{device_id}/cps` - Echtzeit CPS Werte
-- `gmc_geiger/{device_id}/cps_avg` - Durchschnitts CPS (10 Min)
-- `gmc_geiger/{device_id}/availability` - Online/Offline Status
-- `gmc_geiger/{device_id}/device_info` - Geräte-Informationen
-
-`{device_id}` wird entweder aus Config gelesen oder aus Serial Number / MAC-Address generiert.
+`device_id` = Seriennummer oder `gmc800` als Fallback
 
 ### 4.2 Payload-Format
 
-**Echtzeit CPS:**
+**Realtime State (`state`)**:
 ```json
 {
-  "cps": 28,
+  "cpm": 28,
+  "usv_h": 0.182,
   "timestamp": "2024-01-15T10:30:45Z",
-  "unit": "cps"
+  "unit": "CPM"
 }
 ```
 
-**Durchschnitts CPS:**
+**Averaged State (`state_avg`)**:
 ```json
 {
-  "cps_avg": 25.4,
-  "cps_min": 18,
-  "cps_max": 35,
+  "cpm_avg": 25.4,
+  "cpm_min": 18,
+  "cpm_max": 35,
+  "usv_h_avg": 0.1651,
   "window_minutes": 10,
   "sample_count": 600,
   "timestamp": "2024-01-15T10:30:00Z",
-  "unit": "cps"
+  "unit": "CPM"
 }
 ```
 
-**Availability:**
-```
-online / offline
-```
-(Simple String, nicht JSON)
-
-**Device Info:**
+**Device Info (`info`)** - Retained:
 ```json
 {
-  "model": "GMC-800",
-  "firmware": "Re 1.10",
+  "model": "GMC-800Re",
+  "firmware": "1.10",
+  "serial": "05004D323533AB",
   "manufacturer": "GQ Electronics"
 }
 ```
 
 ### 4.3 QoS Levels
 
-- CPS Echtzeit: QoS 0 (at most once) - bei 1 Hz ist Verlust akzeptabel
-- CPS Durchschnitt: QoS 1 (at least once) - wichtigere Daten
-- Availability: QoS 1, Retain=True
-- Discovery: QoS 1, Retain=True
+- **State (realtime)**: QoS 0 (fire and forget, hohe Frequenz)
+- **State (average)**: QoS 1 (at least once, wichtige Aggregation)
+- **Device Info**: QoS 1, Retained
+- **Availability**: QoS 1, Retained
 
 ## 5. Home Assistant Discovery
 
 ### 5.1 Discovery Topics
 
-Home Assistant verwendet das Schema:
 ```
-homeassistant/{component}/{device_id}/{object_id}/config
+homeassistant/sensor/<device_id>/cpm/config
+homeassistant/sensor/<device_id>/cpm_avg/config
+homeassistant/sensor/<device_id>/usv_h/config
+homeassistant/sensor/<device_id>/usv_h_avg/config
 ```
-
-Unsere Discovery-Nachrichten:
-- `homeassistant/sensor/gmc_geiger_{device_id}/cps/config`
-- `homeassistant/sensor/gmc_geiger_{device_id}/cps_avg/config`
 
 ### 5.2 Discovery Payload Beispiel
 
-**CPS Sensor:**
+**CPM Sensor (Realtime)**:
 ```json
 {
-  "name": "Radiation CPS",
-  "unique_id": "gmc_geiger_{device_id}_cps",
-  "state_topic": "gmc_geiger/{device_id}/cps",
-  "value_template": "{{ value_json.cps }}",
-  "unit_of_measurement": "cps",
+  "name": "GMC-800 Radiation CPM",
+  "unique_id": "gmc800_05004D323533AB_cpm",
+  "state_topic": "gmc/geiger/05004D323533AB/state",
+  "value_template": "{{ value_json.cpm }}",
+  "unit_of_measurement": "CPM",
   "icon": "mdi:radioactive",
   "device": {
-    "identifiers": ["gmc_geiger_{device_id}"],
-    "name": "GMC Geigerzähler",
-    "model": "GMC-800",
+    "identifiers": ["gmc_05004D323533AB"],
+    "name": "GMC-800 Geiger Counter",
+    "model": "GMC-800Re",
     "manufacturer": "GQ Electronics",
-    "sw_version": "Re 1.10"
+    "sw_version": "1.10"
   },
-  "availability_topic": "gmc_geiger/{device_id}/availability"
+  "availability_topic": "gmc/geiger/05004D323533AB/availability"
 }
 ```
 
-**CPS Average Sensor:**
+**µSv/h Sensor (Average)**:
 ```json
 {
-  "name": "Radiation CPS (10min avg)",
-  "unique_id": "gmc_geiger_{device_id}_cps_avg",
-  "state_topic": "gmc_geiger/{device_id}/cps_avg",
-  "value_template": "{{ value_json.cps_avg }}",
-  "unit_of_measurement": "cps",
+  "name": "GMC-800 Radiation (10min avg)",
+  "unique_id": "gmc800_05004D323533AB_usv_h_avg",
+  "state_topic": "gmc/geiger/05004D323533AB/state_avg",
+  "value_template": "{{ value_json.usv_h_avg }}",
+  "unit_of_measurement": "µSv/h",
   "icon": "mdi:radioactive",
   "device": {
-    "identifiers": ["gmc_geiger_{device_id}"],
-    "name": "GMC Geigerzähler",
-    "model": "GMC-800",
+    "identifiers": ["gmc_05004D323533AB"],
+    "name": "GMC-800 Geiger Counter",
+    "model": "GMC-800Re",
     "manufacturer": "GQ Electronics",
-    "sw_version": "Re 1.10"
+    "sw_version": "1.10"
   },
-  "availability_topic": "gmc_geiger/{device_id}/availability"
+  "availability_topic": "gmc/geiger/05004D323533AB/availability"
 }
 ```
 
 ### 5.3 Discovery Timing
 
-- Discovery-Nachrichten beim Startup senden
-- Mit Retain-Flag, damit Home Assistant sie nach Neustart wiederfindet
-- Erneut senden nach MQTT-Reconnect
+- Discovery Messages werden beim Start publiziert
+- Retained, damit HA sie bei einem Restart findet
+- Nach Device Info Fetch (um korrekte Model/Version zu haben)
 
 ## 6. Konfiguration
 
 ### 6.1 config.yaml Schema
 
 ```yaml
-# Serial Port Konfiguration
 device:
   port: /dev/ttyUSB0
-  baud_rate: 115200  # Optional, default: 115200
-  timeout: 2  # Sekunden, optional
-  mode: heartbeat  # 'heartbeat' oder 'polling', default: heartbeat
-  # read_interval: 1.0  # Nur für Polling-Mode, Sekunden, optional
+  baudrate: 115200  # GMC-800 uses 115200, other models may vary
+  timeout: 5.0      # seconds
 
-### 7.1 Device Connection Errors
+sampling:
+  interval: 1.0              # seconds between polls
+  aggregation_window: 600    # seconds (10 minutes)
+  aggregation_interval: 600  # publish average every 10 minutes
 
-**Problem**: Serial Device nicht erreichbar, USB getrennt, Gerät antwortet nicht
-
-**Strategie**:
-- Exponential Backoff Reconnect (1s, 2s, 4s, 8s, max 60s)
-- Logging aller Connection-Fehler
-- MQTT Availability auf "offline" setzen
-- Weiterlaufen des Services (nicht crashen)
-
-# MQTT Broker Konfiguration
 mqtt:
-  host: localhost
-  port: 1883  # Optional, default: 1883
-  username: mqtt_user  # Optional
-  password: mqtt_password  # Optional
-  client_id: gmc_geiger_bridge  # Optional, default: auto-generated
-  
-  # Topic Konfiguration
-  base_topic: gmc_geiger  # Optional, default: gmc_geiger
-  device_id: sensor_01  # Optional, default: auto-generated from device
-  
-  # Home Assistant Discovery
-  discovery_prefix: homeassistant  # Optional, default: homeassistant
-  discovery_enabled: true  # Optional, default: true
+  broker: localhost
+  port: 1883
+  username: null
+  password: null
+  client_id: gmc-geiger-mqtt
+  topic_prefix: gmc/geiger
+  qos_realtime: 0
+  qos_aggregate: 1
+  homeassistant_discovery: true
+  homeassistant_prefix: homeassistant
 
-# Aggregation Einstellungen
-aggregation:
-  window_minutes: 10  # Optional, default: 10
-  publish_interval_seconds: 600  # Optional, default: 600 (10 min)
+conversion:
+  cpm_to_usv_factor: 0.0065  # Conversion factor CPM → µSv/h (device-specific)
 
-# Logging
 logging:
-  level: INFO  # DEBUG, INFO, WARNING, ERROR
-  file: null  # Optional, für File-Logging
+  level: INFO
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ```
 
 ### 6.2 Umgebungsvariablen (Optional)
 
-Für Secrets, mit Vorrang vor config.yaml:
+Alle Config-Werte können per Env-Var überschrieben werden:
+- `GMC_DEVICE_PORT`
+- `GMC_MQTT_BROKER`
 - `GMC_MQTT_USERNAME`
 - `GMC_MQTT_PASSWORD`
-- `GMC_DEVICE_PORT`
 
 ## 7. Device Startup und Shutdown Sequenzen
 
-### 7.1 Startup-Sequenz (HEARTBEAT Mode)
-
-**Ziel**: Gerät in definierten, sauberen Zustand versetzen, auch nach unsauberem Shutdown
+### 7.1 Startup-Sequenz (Polling Mode)
 
 ```python
-def initialize_device():
-    # 1. Serial Port öffnen
-    serial_port = open_serial_port(port, baud=115200)
+def initialize_device(config: DeviceConfig) -> GMCDevice:
+    """Initialize GMC device with polling mode."""
     
-    # 2. DTR/RTS aktivieren (für CH340)
-    serial_port.setDTR(True)
-    serial_port.setRTS(True)
-    time.sleep(0.1)  # Hardware settle time
+    # 1. Open serial connection
+    connection = GMCConnection(
+        port=config.port,
+        baudrate=config.baudrate,
+        timeout=config.timeout
+    )
+    connection.connect()
     
-    # 3. HEARTBEAT stoppen (falls von früher noch aktiv)
-    serial_port.write(b"<HEARTBEAT0>>")
-    time.sleep(0.2)  # Warten bis Gerät Command verarbeitet hat
+    # 2. Get device info
+    connection.send_command(GMCProtocol.CMD_GET_VER)
+    version_data = connection.read_response(14, wait_ms=200)
+    model, version = GMCProtocol.parse_version(version_data)
     
-    # 4. Serial Buffer leeren (alte/ungelesene Daten)
-    serial_port.reset_input_buffer()
-    serial_port.reset_output_buffer()
+    # 3. Try to get serial (optional)
+    try:
+        connection.send_command(GMCProtocol.CMD_GET_SERIAL)
+        serial_data = connection.read_response(7, wait_ms=100)
+        serial = GMCProtocol.parse_serial(serial_data)
+    except Exception:
+        serial = None
     
-    # 5. Verbindungstest und Device Info abrufen
-    serial_port.write(b"<GETVER>>")
-    version_response = serial_port.read(64)
-    if not version_response:
-        raise DeviceConnectionError("No response from device")
+    # 4. Create device info
+    device_info = DeviceInfo(model=model, version=version, serial=serial)
     
-    # 6. Parse Device Info
-    model, firmware = parse_version(version_response)
-    logger.info(f"Connected to {model} {firmware}")
+    # 5. Create device with reader
+    device = GMCDevice(connection, device_info)
     
-    # 7. HEARTBEAT aktivieren
-    serial_port.write(b"<HEARTBEAT1>>")
-    time.sleep(0.1)
-    
-    # 8. Erste Messung zur Validierung
-    first_reading = serial_port.read(4)
-    if len(first_reading) != 4:
-        raise DeviceConnectionError("Invalid heartbeat data")
-    
-    return serial_port, model, firmware
+    return device
 ```
 
-**Wichtige Punkte**:
-- `<HEARTBEAT0>>` VOR Buffer-Clear verhindert Race-Conditions
-- Kurze Sleeps geben dem Gerät Zeit zur Verarbeitung
-- `<GETVER>>` als Health-Check statt blind `<HEARTBEAT1>>` zu aktivieren
-- Erste Messung validieren (4 Bytes erwartet)
+**Key Points:**
+- Einfacher Startup, keine komplexe State-Machine
+- Buffer wird vor jedem Command gecleart
+- Device Info als erstes holen für Discovery
 
 ### 7.2 Shutdown-Sequenz
 
-**Ziel**: Gerät in Clean State hinterlassen, keine hängenden Heartbeats
-
 ```python
-def shutdown_device():
-    # 1. Signal Reading-Thread zum Stop
-    stop_reading_flag.set()
+def shutdown_device(device: GMCDevice) -> None:
+    """Clean shutdown of device."""
     
-    # 2. Warte auf Thread-Ende (mit Timeout)
-    reading_thread.join(timeout=5.0)
+    logger.info("Shutting down GMC device")
     
-    # 3. HEARTBEAT deaktivieren (KRITISCH!)
-    try:
-        serial_port.write(b"<HEARTBEAT0>>")
-        serial_port.flush()  # Ensure command is sent
-        time.sleep(0.2)  # Warten bis verarbeitet
-    except Exception as e:
-        logger.error(f"Failed to disable heartbeat: {e}")
+    # 1. Stop reader
+    if device.reader:
+        device.reader.stop()
     
-    # 4. MQTT: Offline-Status publizieren
-    mqtt_client.publish(
-        f"{base_topic}/availability",
-        "offline",
-        qos=1,
-        retain=True
-    )
-    
-    # 5. MQTT Message Queue flushen
-    mqtt_client.loop_stop()
-    
-    # 6. MQTT Disconnect
-    mqtt_client.disconnect()
-    
-    # 7. Serial Port schließen
-    serial_port.close()
-    
-    logger.info("Clean shutdown completed")
+    # 2. Close serial connection
+    if device.connection and device.connection.serial:
+        try:
+            device.connection.serial.close()
+            logger.info("Serial connection closed")
+        except Exception as e:
+            logger.error(f"Error closing serial: {e}")
 ```
 
-**Wichtige Punkte**:
-- `<HEARTBEAT0>>` mit Retry-Logik (best effort)
-- Auch bei Fehlern weitermachen (Shutdown darf nicht hängen)
-- MQTT Offline NACH Heartbeat-Stop (konsistenter State)
-- Timeout für alle Blocking-Operationen
-
-### 7.3 Polling-Mode Startup (Fallback)
-
-```python
-def initialize_device_polling():
-    # 1-4: Identisch zu Heartbeat-Mode
-    # ...
-    
-    # 5. Sicherstellen dass kein Heartbeat läuft
-    serial_port.write(b"<HEARTBEAT0>>")
-    time.sleep(0.2)
-    serial_port.reset_input_buffer()
-    
-    # 6. Device Info abrufen
-    serial_port.write(b"<GETVER>>")
-    version_response = serial_port.read(64)
-    
-    # 7. Test-Reading
-    serial_port.write(b"<GETCPS>>")
-    cps_response = serial_port.read(4)
-    if len(cps_response) != 4:
-        raise DeviceConnectionError("Invalid CPS response")
-    
-    return serial_port, model, firmware
-```
+**Key Points:**
+- Kein spezieller Cleanup notwendig (kein Heartbeat zu deaktivieren)
+- Einfach Reader stoppen und Serial schließen
 
 ## 8. Error Handling und Resilienz
 
 ### 8.1 Device Connection Errors
 
-**Problem**: Serial Device nicht erreichbar, USB getrennt, Gerät antwortet nicht
-
-**Strategie**:
-- Bei Reconnect: Vollständige Startup-Sequenz ausführen (siehe 7.1)
-- Exponential Backoff Reconnect (1s, 2s, 4s, 8s, max 60s)
-- Logging aller Connection-Fehler
-- MQTT Availability auf "offline" setzen
-- Weiterlaufen des Services (nicht crashen)
+- **Initial Connect Failure**: Retry mit exponential backoff (max 5 Versuche)
+- **Read Timeout during polling**: Log error, continue polling
+- **Serial Disconnect**: Versuche Reconnect, publiziere "offline" Status
 
 ### 8.2 MQTT Connection Errors
 
-**Problem**: MQTT Broker nicht erreichbar, Netzwerk-Unterbrechung
+- Auto-reconnect via paho-mqtt
+- Republish availability auf reconnect
+- Buffer Readings falls MQTT down (max 1000 samples)
 
-**Strategie**:
-- Automatisches Reconnect durch Paho-MQTT Library
-- Buffering von Messwerten (begrenzte Queue)
-- Bei Reconnect: Discovery-Nachrichten erneut senden
-- LWT (Last Will Testament) für saubere Offline-Meldung
+### 8.3 Invalid Readings
 
-### 8.3 Invalid Readings (HEARTBEAT Mode)
-
-**Problem**: Timeout beim Lesen, ungültige Antwort, Buffer-Desync (HEARTBEAT)
-
-**Strategie**:
-- **Read-Timeout** (keine Daten nach 5s):
-  - 3 Versuche mit Re-Sync: `<HEARTBEAT0>>` → Buffer clear → `<HEARTBEAT1>>`
-  - Danach: Full Reconnect mit Startup-Sequenz
-- **Buffer-Desync** (z.B. 3 statt 4 Bytes gelesen):
-  - Attempt Recovery: Rest-Bytes lesen bis Sync gefunden
-  - Max 100 Bytes durchsuchen, dann Re-Sync wie oben
-- **Invalid Values** (z.B. alle 0xFF):
-  - Einzelne Messung skippen, loggen
-  - Nach 10 konsekutiven Fehlern: Re-Sync
-- **Fallback zu Polling-Mode** (optional):
-  - Nach 5 fehlgeschlagenen Heartbeat-Recoveries
-  - Config-Flag: `device.allow_polling_fallback: true`
-
-**Beispiel Recovery-Logik**:
 ```python
-consecutive_errors = 0
-while running:
-    try:
-        data = serial_port.read(4)
-        if len(data) != 4:
-            consecutive_errors += 1
-            if consecutive_errors >= 3:
-                resync_heartbeat()
-                consecutive_errors = 0
-            continue
-        
-        cps_value = parse_cps(data)
-        consecutive_errors = 0  # Reset on success
-        process_value(cps_value)
-        
-    except serial.SerialTimeoutException:
-        handle_timeout()
+def validate_reading(reading: Reading) -> bool:
+    """Validate if reading is plausible."""
+    # CPM should be reasonable (not hardware glitch)
+    if reading.cpm > 100000:  # 100k CPM is extreme
+        logger.warning(f"Suspicious reading: {reading.cpm} CPM")
+        return False
+    return True
 ```
-
-**Aktionen**:
-1. Stop des Reading-Loops
-2. Flush der MQTT Message Queue
-3. Publish "offline" zu Availability Topic
-4. Close Serial Connection
-5. Disconnect MQTT Client
-6. Exit mit Code 0
 
 ### 8.4 Signal Handling
 
-**Signale**: SIGTERM, SIGINT, SIGHUP (optional: reload config)
-
-**Handler-Implementation**:
 ```python
-import signal
-
 def signal_handler(signum, frame):
-    logger.info(f"Received signal {signum}, initiating shutdown...")
-    shutdown_event.set()
+    """Handle shutdown signals gracefully."""
+    logger.info(f"Received signal {signum}, shutting down...")
+    service.stop()
+    sys.exit(0)
 
-signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
-```
-
-**Shutdown-Ablauf**: Siehe Abschnitt 7.2
-
-**Timeout-Protection**: Gesamter Shutdown max. 10 Sekunden, dann Force-Exit
-
-### 8.5 Heartbeat State Protection
-
-**Problem**: Nach unsauberem Shutdown (kill -9, Stromausfall) sendet Gerät weiter
-
-**Mitigation**:
-- **Startup**: IMMER `<HEARTBEAT0>>` vor `<HEARTBEAT1>>`
-- **Monitoring**: Watchdog erkennt hängende Prozesse und restartlet sauber
-- **Alternative**: Systemd mit `Restart=always` + `KillMode=mixed`
-  - Sendet SIGTERM, wartet `TimeoutStopSec`, dann SIGKILL
-  - Nächster Start führt wieder `<HEARTBEAT0>>` aus
-
-**Best Practice**: Serial Port exklusiv öffnen (verhindert mehrere Instanzen)
-```python
-# Linux: flock() für exclusive access
-import fcntl
-fcntl.flock(serial_port.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+signal.signal(signal.SIGTERM, signal_handler)
 ```
 
 ## 9. Paket-Struktur und Deployment
@@ -620,28 +583,26 @@ fcntl.flock(serial_port.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
 [project]
 name = "gmc-geiger-mqtt"
 version = "0.1.0"
-description = "MQTT Bridge for GMC Geiger Counters"
-requires-python = ">=3.9"
+description = "MQTT bridge for GMC Geiger counters"
+requires-python = ">=3.8"
 dependencies = [
-    "paho-mqtt>=1.6.0",
     "pyserial>=3.5",
     "pyyaml>=6.0",
-    "python-dateutil>=2.8"
+    "paho-mqtt>=1.6.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=7.0",
-    "pytest-cov>=4.0",
-    "black>=23.0",
-    "ruff>=0.1"
+    "pytest>=7.0.0",
+    "black>=23.0.0",
+    "mypy>=1.0.0",
 ]
 
 [project.scripts]
 gmc-geiger-mqtt = "gmc_geiger_mqtt.__main__:main"
 
 [build-system]
-requires = ["setuptools>=65.0", "wheel"]
+requires = ["setuptools>=65.0"]
 build-backend = "setuptools.build_meta"
 ```
 
@@ -654,9 +615,10 @@ After=network.target
 
 [Service]
 Type=simple
-User=gmc
+User=geiger
 Group=dialout
-ExecStart=/usr/local/bin/gmc-geiger-mqtt --config /etc/gmc-geiger-mqtt/config.yaml
+WorkingDirectory=/opt/gmc-geiger-mqtt
+ExecStart=/opt/gmc-geiger-mqtt/.venv/bin/gmc-geiger-mqtt --config /etc/gmc-geiger-mqtt/config.yaml
 Restart=always
 RestartSec=10
 
@@ -666,102 +628,114 @@ WantedBy=multi-user.target
 
 ### 9.3 Docker Support (Optional)
 
-- Dockerfile für Container-Deployment
-- Device Passthrough für USB (`--device=/dev/ttyUSB0`)
-- Volume Mount für Config
+```dockerfile
+FROM python:3.11-slim
+WORKDIR /app
+COPY . .
+RUN pip install --no-cache-dir .
+CMD ["gmc-geiger-mqtt", "--config", "/config/config.yaml"]
+```
 
 ## 10. Testing-Strategie (sparsam)
 
 ### 10.1 Unit Tests
 
-**Fokus**: Kritische Business-Logik, kein Over-Engineering
+Nur für kritische Business Logic:
+- `GMCProtocol.parse_cpm()` - CPM Parsing
+- `GMCProtocol.parse_version()` - Version Parsing
+- `MovingAverageAggregator` - Durchschnittsberechnung
+- Config Validation
 
-- `test_protocol.py`: GQ-RFC1801 Kommando-Parsing (inkl. HEARTBEAT)
-- `test_connection.py`: Startup/Shutdown Sequenzen, Re-Sync Logik
-- `test_aggregator.py`: Gleitender Durchschnitt Berechnung
-- `test_config.py`: Config Loading und Validation
-- `test_discovery.py`: Home Assistant Discovery Payload Generation
-- `test_recovery.py`: Error Recovery Szenarien (Buffer-Desync, Timeouts)
-
-**Mocking**:
-- Serial Device: Mock mit vorgefertigten Responses
-- MQTT Client: Mock für Publishing-Tests
-
-**Mocking**:
-- Serial Device: Mock mit vorgefertigten Responses
-- MQTT Client: Mock für Publishing-Tests
+**Keine Tests für:**
+- Serial Communication (Integration Test Territory)
+- MQTT Publishing (würde Mock-Broker brauchen)
+- Service Orchestrierung (zu komplex)
 
 ### 10.2 Integration Tests (Optional, minimal)
 
-- End-to-End Test mit Mock Serial und Mock MQTT Broker
-- Nur für kritische Happy-Path Szenarien
-
-### 10.3 Keine Tests für
-
-- Einfache Getter/Setter
-- Triviale Wrapper-Funktionen
-- Framework-Code (paho-mqtt, pyserial)
+- `test_device_connection.py`: Test mit echtem Device (manuell)
+- `test_mqtt_flow.py`: Test mit lokalem Mosquitto (optional)
 
 ## 11. Logging
 
 ### 11.1 Log Levels
 
-- **DEBUG**: Alle Serial Commands/Responses, MQTT Messages
-- **INFO**: Startup, Connections etabliert, Aggregierte Statistiken
-- **WARNING**: Reconnects, einzelne fehlerhafte Readings
-- **ERROR**: Connection-Fehler, Config-Probleme
+- **DEBUG**: Jede Command/Response, Buffer States
+- **INFO**: Startup, Shutdown, Connection Events, jede 10. Reading
+- **WARNING**: Ungültige Readings, Reconnects
+- **ERROR**: Connection Failures, MQTT Errors
 
 ### 11.2 Strukturiertes Logging
 
 ```python
-logger.info("Device connected", extra={
-    "device_model": "GMC-800",
-    "firmware": "Re 1.10",
-    "port": "/dev/ttyUSB0"
-})
+logger.info(
+    "Reading received",
+    extra={
+        "cpm": reading.cpm,
+        "usv_h": reading.to_usv_per_hour(),
+        "timestamp": reading.timestamp.isoformat()
+    }
+)
 ```
 
 ## 12. Erweiterbarkeit
 
 ### 12.1 Zukünftige Features
 
-**Mehrfach-Consumer Support**:
-- Bereits durch MQTT-Architektur gegeben
-- Jeder Client kann Topics subscriben
+**Web UI (Phase 2)**:
+- Echtzeit-Chart der CPM-Werte
+- Historische Daten (SQLite Backend)
+- Konfiguration über Web Interface
 
-**Zusätzliche Metriken**:
-- CPM (Counts Per Minute) zusätzlich zu CPS
-- Dosisrate (µSv/h) - benötigt Umrechnungsfaktor
-- Temperatur (falls vom Gerät unterstützt)
-- Dynamischer Mode-Switch (Heartbeat ↔ Polling bei Problemen)
+**Multiple Devices**:
+- Support für mehrere Geigerzähler parallel
+- Aggregierte Ansicht über alle Devices
 
-
-**Alternative Geräte**:
-- `device/protocol.py` kann erweitert werden für andere GMC Modelle
-- Factory Pattern für verschiedene Device-Typen
-
-**Web-UI / Status-Dashboard** (optional):
-- Minimaler HTTP-Server für Health-Check Endpoint
-- Prometheus Metrics Export
+**Advanced Analytics**:
+- Anomalie-Detektion (plötzliche Spikes)
+- Langzeit-Trends
+- Export zu InfluxDB/Prometheus
 
 ### 12.2 Plugin-Architektur (Future)
 
-Falls weitere Publisher gewünscht:
-- Abstract Publisher Base Class
-- Dynamisches Laden von Publishern
-- Z.B. InfluxDB Publisher, File Logger, etc.
+```python
+class ReadingHandler(ABC):
+    @abstractmethod
+    def handle_reading(self, reading: Reading) -> None:
+        pass
+
+# Plugins
+class MQTTHandler(ReadingHandler): ...
+class InfluxDBHandler(ReadingHandler): ...
+class WebSocketHandler(ReadingHandler): ...
+```
 
 ## 13. Deployment-Checklist
 
-1. ✓ Python 3.9+ installiert
-2. ✓ User in `dialout` Gruppe (für `/dev/ttyUSB*` Zugriff)
-3. ✓ GMC Gerät verbunden und unter `/dev/ttyUSB*` sichtbar
-4. ✓ `config.yaml` erstellt und validiert
-5. ✓ MQTT Broker erreichbar
-6. ✓ Systemd Service installiert (optional)
-7. ✓ Logs überwacht nach Startup
-8. ✓ Home Assistant zeigt Sensoren an
+- [ ] Config file angelegt und angepasst
+- [ ] User hat Zugriff auf Serial Port (dialout Gruppe)
+- [ ] Baudrate korrekt für Device-Modell (GMC-800 = 115200)
+- [ ] MQTT Broker erreichbar
+- [ ] Home Assistant MQTT Integration konfiguriert
+- [ ] Systemd Service installiert (falls Linux)
+- [ ] Logs rotieren konfiguriert
+- [ ] CPM → µSv/h Conversion Factor korrekt für Tube-Typ
 
----
+## 14. Known Issues und Workarounds
 
-**Status**: Architecture Draft v1.0 - Ready for Review
+### 14.1 GMC-800 v1.10 Spezifika
+
+- **Baudrate**: Verwendet 115200, nicht 57600 wie im RFC spezifiziert
+- **CPM Response**: 4 Bytes (korrekt nach RFC), aber viele Beispiele zeigen 2 Bytes
+- **Version String**: Kein Null-Terminator, variable Länge
+
+### 14.2 CH340 USB-Serial Chip
+
+- **DTR/RTS Required**: Muss explizit aktiviert werden
+- **Buffer Clearing**: Input Buffer vor jedem Command clearen
+
+### 14.3 Timing
+
+- **Wait after command**: Mindestens 100ms vor Read
+- **Connection init**: 500ms warten nach Serial Open
+- **Poll interval**: Nicht unter 1 Sekunde (Device braucht Zeit)

@@ -47,17 +47,6 @@ def test_device_reading(config: Config) -> int:
             logger.info("=" * 70)
             logger.info(f"Connected to device: {device.device_info}")
             logger.info("=" * 70)
-
-            # Test heartbeat (optional, some devices may not support it)
-            logger.info("Testing heartbeat...")
-            try:
-                if device.heartbeat():
-                    logger.info("✓ Heartbeat successful")
-                else:
-                    logger.warning("✗ Heartbeat returned unexpected response")
-            except GMCDeviceError as e:
-                logger.warning(f"✗ Heartbeat not supported or failed: {e}")
-
             logger.info("")
             logger.info("Starting continuous reading mode (Ctrl+C to stop)...")
             logger.info("=" * 70)

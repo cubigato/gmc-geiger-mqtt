@@ -8,9 +8,11 @@ A Python application for reading radiation data from GMC Geiger counters and pub
 
 ✅ Implemented:
 - Serial communication with GMC devices (GQ-RFC1801 protocol)
-- CPM reading and µSv/h conversion
+- **CPM reading (4-byte, 32-bit)** - correctly implemented
+- µSv/h conversion
 - Device info retrieval (model, version, serial)
 - Configuration system (YAML-based)
+- Polling-only mode (no heartbeat)
 - Basic logging and test mode
 
 🚧 Not yet implemented:
@@ -23,86 +25,63 @@ A Python application for reading radiation data from GMC Geiger counters and pub
 ## Requirements
 
 - Python 3.8+
-- GMC Geiger counter (tested with GMC-800 v1.10, should work with other GMC models)
+- GMC Geiger counter (tested with GMC-800 v1.10, should work with GMC-500/600 series)
 - USB connection to the device
 
 ## Installation
 
-1. Clone the repository
-2. Install dependencies using `uv`:
+1. Install dependencies:
 ```bash
 cd gmc-geiger-mqtt
 uv pip install -r requirements.txt
 ```
 
-Or with standard pip (in a virtual environment):
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-3. Make sure your user has access to the serial port:
+2. Ensure your user has access to the serial port:
 ```bash
 sudo usermod -a -G dialout $USER
 ```
-Then logout and login again, or use `sg dialout -c "your command"` to run commands in the dialout group.
+Then logout and login, or use `sg dialout -c "command"`.
 
 ## Configuration
 
-Edit `config.yaml` to match your setup:
+Edit `config.yaml`:
 
 ```yaml
 device:
-  port: "/dev/ttyUSB0"  # Change to your device port
-  baudrate: 115200      # GMC-800 uses 115200
+  port: "/dev/ttyUSB0"
+  baudrate: 115200      # GMC-800 uses 115200!
   timeout: 5.0
 ```
 
-**Important:** The baudrate is **115200** for GMC-800, not 57600 as specified in GQ-RFC1801. Different models may use different baudrates.
+**Critical:** Baudrate is **115200** for GMC-800, not 57600 as specified in GQ-RFC1801!
 
 ## Testing
 
-To test serial communication with your device:
+Test serial communication:
 
 ```bash
-# If you're in the dialout group already:
+# If already in dialout group:
 python3 run.py
 
-# If you need to run with dialout permissions:
+# Otherwise:
 sg dialout -c "python3 run.py"
 ```
 
-Or with a custom config file:
-```bash
-python3 run.py /path/to/config.yaml
-```
-
-This will:
-1. Connect to the GMC device
-2. Display device information (model, version, serial number)
-3. Test heartbeat (may not be supported by all devices)
-4. Continuously read CPM values every 2 seconds and display them
-5. Press Ctrl+C to stop
-
 Expected output:
 ```
-2025-11-03 02:59:10 - src.main - INFO - Starting GMC Geiger test mode
-2025-11-03 02:59:10 - src.main - INFO - Device: /dev/ttyUSB0 @ 115200 baud
-2025-11-03 02:59:11 - src.gmc_device - INFO - Connecting to GMC device on /dev/ttyUSB0 at 115200 baud
-2025-11-03 02:59:11 - src.gmc_device - INFO - Successfully connected to GMC device
-2025-11-03 02:59:16 - src.gmc_device - INFO - Device info: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
+2025-11-03 03:09:11 - src.gmc_device - INFO - Device info: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
 ======================================================================
-2025-11-03 02:59:16 - src.main - INFO - Connected to device: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
+2025-11-03 03:09:11 - src.main - INFO - Connected to device: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
 ======================================================================
-2025-11-03 02:59:16 - src.main - INFO - Testing heartbeat...
-2025-11-03 02:59:21 - src.main - WARNING - ✗ Heartbeat not supported or failed: Expected 2 bytes, got 0 bytes
-2025-11-03 02:59:21 - src.main - INFO - Starting continuous reading mode (Ctrl+C to stop)...
+2025-11-03 03:09:11 - src.main - INFO - Starting continuous reading mode (Ctrl+C to stop)...
 ======================================================================
-2025-11-03 02:59:21 - src.main - INFO - [   1] 02:59:21 | CPM:    0 | µSv/h: 0.0000
-2025-11-03 02:59:23 - src.main - INFO - [   2] 02:59:23 | CPM:    0 | µSv/h: 0.0000
+2025-11-03 03:09:11 - src.main - INFO - [   1] 03:09:11 | CPM:   19 | µSv/h: 0.1235
+2025-11-03 03:09:13 - src.main - INFO - [   2] 03:09:13 | CPM:   22 | µSv/h: 0.1430
+2025-11-03 03:09:15 - src.main - INFO - [   3] 03:09:15 | CPM:   21 | µSv/h: 0.1365
 ...
 ```
+
+Press Ctrl+C to stop.
 
 ## Project Structure
 
@@ -115,7 +94,7 @@ gmc-geiger-mqtt/
 │   ├── __init__.py
 │   ├── main.py          # Application entry point
 │   ├── config.py        # Configuration loader
-│   ├── gmc_device.py    # GMC device communication
+│   ├── gmc_device.py    # GMC device communication (polling-only)
 │   └── models.py        # Domain models (Reading, DeviceInfo, etc.)
 ├── tests/               # Unit tests
 ├── ARCHITECTURE.md      # Detailed architecture documentation
@@ -124,48 +103,108 @@ gmc-geiger-mqtt/
 
 ## Architecture
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
 
-Key design principles:
-- Clean separation of concerns (device communication, data processing, MQTT publishing)
-- Configuration-driven
-- Extensible for future features (Web UI, etc.)
-- Proper error handling and logging
+**Key Points:**
+- **Polling-only mode** - No heartbeat command (not supported by GMC-800)
+- **4-byte CPM reading** - 32-bit unsigned integer, MSB first
+- **Clean separation** - Device, Processing, MQTT layers
+- **Configuration-driven** - All settings in config.yaml
+
+## Important Implementation Details
+
+### CPM Reading (4 bytes!)
+
+The GMC device returns CPM as **4 bytes** (32-bit unsigned integer):
+
+```python
+# Send command
+serial.write(b"<GETCPM>>")
+
+# Read 4 bytes (MSB first)
+data = serial.read(4)
+
+# Parse: data[0] = MSB, data[3] = LSB
+cpm = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
+```
+
+Example: `0x00 0x00 0x00 0x1C` = 28 CPM
+
+### No Heartbeat Mode
+
+The GMC-800 v1.10 **does not support** the `<HEARTBEAT>>` command. We use **polling-only**:
+- Send `<GETCPM>>` every N seconds
+- Wait ~100-200ms for response
+- Parse and process
+
+### Buffer Management
+
+**Critical:** Clear input buffer before each command:
+```python
+serial.reset_input_buffer()  # Prevent stale data!
+serial.write(command)
+serial.flush()
+```
+
+### DTR/RTS Activation
+
+Required for CH340 USB-Serial chips:
+```python
+serial.setDTR(True)
+serial.setRTS(True)
+```
 
 ## Known Issues
 
-1. **Heartbeat command not supported**: The GMC-800 v1.10 does not respond to the `<HEARTBEAT>>` command. This is non-fatal and the application continues to work.
-
-2. **Baudrate varies by model**: While GQ-RFC1801 specifies 57600 baud, the GMC-800 uses 115200. Check your device's documentation.
+1. **GMC-800 baudrate**: Uses 115200, not 57600 (contrary to GQ-RFC1801)
+2. **CPM is 4 bytes**: Many examples incorrectly show 2 bytes
+3. **No heartbeat support**: GMC-800 v1.10 doesn't respond to `<HEARTBEAT>>`
+4. **Version string**: No guaranteed null terminator, variable length
 
 ## Troubleshooting
 
-### Device not found
-- Check if the device is connected: `ls -l /dev/ttyUSB*`
-- Verify user has permission: `sudo usermod -a -G dialout $USER` (then logout/login)
-- Try: `sg dialout -c "python3 run.py"`
+### Permission denied on /dev/ttyUSB0
+```bash
+sudo usermod -a -G dialout $USER
+# Then logout/login or use: sg dialout -c "python3 run.py"
+```
+
+### Reading 0 CPM when device shows higher value
+- Check baudrate (GMC-800 = 115200)
+- Verify 4-byte reading (not 2-byte)
+- Check buffer clearing before commands
 
 ### Wrong baudrate
-- GMC-800 uses 115200 baud (not 57600 as specified in GQ-RFC1801)
-- Try different baudrates in `config.yaml` if connection fails
-- Use `test_serial.py` to test different baudrates
-
-### No data received
-- Ensure no other program is accessing the serial port
-- Try unplugging and replugging the device
-- Check `dmesg | tail` for USB/serial errors
-- Verify baudrate matches your device
+Try `test_serial.py` to test different baudrates:
+```bash
+sg dialout -c "python3 test_serial.py"
+```
 
 ## Next Steps
 
-1. ✅ Test serial communication with device
+1. ✅ Test serial communication
 2. ⏭️ Implement MQTT publishing
 3. Implement moving average calculation
-4. Add continuous service mode with proper signal handling
+4. Add continuous service mode
 5. Add Home Assistant MQTT discovery
-6. Add more tests
-7. Create proper Python package with pyproject.toml
+6. Create proper Python package (pyproject.toml)
+7. Add systemd service
 8. Add Web UI (future)
+
+## Testing During Development
+
+You can test individual components:
+
+```bash
+# Test serial with different baudrates
+sg dialout -c "python3 test_serial.py"
+
+# Test CPM reading details
+sg dialout -c "python3 test_cpm_debug.py"
+
+# Run unit tests
+pytest tests/
+```
 
 ## License
 

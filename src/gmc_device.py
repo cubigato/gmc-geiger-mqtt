@@ -42,7 +42,6 @@ class GMCDevice:
     CMD_GET_VER = b"<GETVER>>"
     CMD_GET_CPM = b"<GETCPM>>"
     CMD_GET_SERIAL = b"<GETSERIAL>>"
-    CMD_HEARTBEAT = b"<HEARTBEAT>>"
 
     def __init__(self, config: DeviceConfig):
         """
@@ -259,43 +258,18 @@ class GMCDevice:
         self._ensure_connected()
 
         self._send_command(self.CMD_GET_CPM)
-        time.sleep(0.05)  # Small delay for device to prepare response
+        time.sleep(0.1)  # Small delay for device to prepare response
 
-        # CPM is returned as 2 bytes (16-bit unsigned integer, big-endian)
-        data = self._read_response(2)
-        cpm = (data[0] << 8) | data[1]
+        # CPM is returned as 4 bytes (32-bit unsigned integer, big-endian)
+        # First byte is MSB, fourth byte is LSB
+        data = self._read_response(4)
+        cpm = (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3]
 
         timestamp = datetime.now()
 
         logger.debug(f"Read CPM: {cpm}")
 
         return Reading(cpm=cpm, timestamp=timestamp)
-
-    def heartbeat(self) -> bool:
-        """
-        Send a heartbeat command to keep the device connection alive.
-
-        Returns:
-            True if heartbeat was successful
-
-        Raises:
-            GMCCommandError: If heartbeat fails
-        """
-        self._ensure_connected()
-
-        self._send_command(self.CMD_HEARTBEAT)
-        time.sleep(0.1)
-
-        # Heartbeat returns 0x55 0xAA
-        response = self._read_response(2)
-        success = response == b"\x55\xaa"
-
-        if success:
-            logger.debug("Heartbeat successful")
-        else:
-            logger.warning(f"Unexpected heartbeat response: {response.hex()}")
-
-        return success
 
     @property
     def device_info(self) -> Optional[DeviceInfo]:
