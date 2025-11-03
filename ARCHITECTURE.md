@@ -24,24 +24,24 @@ Das System fungiert als Bridge zwischen einem GMC Geigerzähler (USB/TTY) und ei
 
 ```
 gmc-geiger-mqtt/
-├── run.py                   # Entry point (startet die Anwendung)
 ├── config.yaml              # Konfigurationsdatei
-├── requirements.txt         # Python-Abhängigkeiten
-├── pytest.ini               # Pytest-Konfiguration (nur tests/ durchsuchen)
+├── pyproject.toml           # Python package configuration (PEP 621)
+├── Makefile                 # Development tasks (test, lint, format, etc.)
 ├── src/
-│   ├── __init__.py
-│   ├── main.py              # Hauptlogik (Service Mode & Test Mode)
-│   ├── config.py            # Configuration management
-│   ├── models.py            # Domain models (Reading, DeviceInfo, DeviceConfig, MQTTConfig, AggregatedReading)
-│   ├── gmc_device.py        # GMC Geräte-Kommunikation (monolithisch: Protocol + Connection + Reader)
-│   ├── mqtt/
-│   │   ├── __init__.py
-│   │   ├── client.py        # MQTT Client Wrapper mit Auto-Reconnect
-│   │   ├── publisher.py     # Publishing Logik
-│   │   └── discovery.py     # Home Assistant Discovery
-│   └── processing/
+│   └── gmc_geiger_mqtt/     # Main package (note: underscore!)
 │       ├── __init__.py
-│       └── aggregator.py    # Gleitender Durchschnitt (MovingAverageAggregator)
+│       ├── main.py          # Hauptlogik (Service Mode & Test Mode)
+│       ├── config.py        # Configuration management
+│       ├── models.py        # Domain models (Reading, DeviceInfo, DeviceConfig, MQTTConfig, AggregatedReading)
+│       ├── gmc_device.py    # GMC Geräte-Kommunikation (monolithisch: Protocol + Connection + Reader)
+│       ├── mqtt/
+│       │   ├── __init__.py
+│       │   ├── client.py    # MQTT Client Wrapper mit Auto-Reconnect
+│       │   ├── publisher.py # Publishing Logik
+│       │   └── discovery.py # Home Assistant Discovery
+│       └── processing/
+│           ├── __init__.py
+│           └── aggregator.py # Gleitender Durchschnitt (MovingAverageAggregator)
 ├── tests/
 │   ├── conftest.py          # Pytest-Konfiguration und Fixtures
 │   ├── test_models.py       # Unit Tests für Domain Models
@@ -830,7 +830,7 @@ Starting continuous reading mode (Ctrl+C to stop)...
 ...
 ```
 
-**Verwendung**: `python3 run.py` (mit `mqtt.enabled: false` in config.yaml)
+**Verwendung**: `gmc-geiger-mqtt` (mit `mqtt.enabled: false` in config.yaml)
 
 ## 4. MQTT Topics und Payloads
 
@@ -1182,13 +1182,12 @@ gmc-geiger-mqtt = "gmc_geiger_mqtt.main:main"
 **Paketstruktur**:
 ```
 gmc-geiger-mqtt/
-├── src/
-│   └── gmc_geiger_mqtt/    # Note: underscore (import name)
-│       ├── __init__.py
-│       ├── main.py
-│       ├── ...
 ├── pyproject.toml
-└── run.py                  # Backwards-compatible wrapper
+└── src/
+    └── gmc_geiger_mqtt/    # Note: underscore (import name)
+        ├── __init__.py
+        ├── main.py
+        └── ...
 ```
 
 **Installation mit uv** (empfohlen):
@@ -1209,14 +1208,11 @@ uv pip install -e ".[dev]"
 
 **Entry Points**:
 ```bash
-# Method 1: Using installed entry point (recommended)
+# Using installed entry point
 gmc-geiger-mqtt
 
-# Method 2: Using Python module
+# Alternative: Using Python module
 python3 -m gmc_geiger_mqtt.main
-
-# Method 3: Backwards-compatible wrapper
-python3 run.py
 ```
 
 **Build und Distribution**:
@@ -1232,8 +1228,6 @@ pip install dist/gmc_geiger_mqtt-0.1.0-py3-none-any.whl
 - `[tool.pytest.ini_options]` - Pytest-Konfiguration
 - `[tool.coverage.*]` - Coverage-Settings
 - `[tool.ruff.*]` - Linting und Formatierung
-
-Siehe [MIGRATION.md](MIGRATION.md) für Details zur Migration von `requirements.txt`.
 
 ## 10. Testing-Strategie (sparsam)
 

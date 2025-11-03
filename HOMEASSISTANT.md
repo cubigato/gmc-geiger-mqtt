@@ -53,7 +53,7 @@ mqtt:
 ### 2. Start the Bridge
 
 ```bash
-python3 run.py
+gmc-geiger-mqtt
 ```
 
 You should see in the logs:
@@ -309,7 +309,7 @@ mqtt:
 
 1. **Check bridge is running**:
    ```bash
-   ps aux | grep run.py
+   ps aux | grep gmc-geiger-mqtt
    ```
 
 2. **Check MQTT availability topic**:

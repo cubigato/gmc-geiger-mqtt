@@ -32,8 +32,6 @@ A Python application for reading radiation data from GMC Geiger counters and pub
 
 ## Installation
 
-### Option 1: Install as Package (Recommended)
-
 1. Clone the repository:
 ```bash
 git clone <repository-url>
@@ -64,21 +62,6 @@ uv pip install -e ".[dev]"
 sudo usermod -a -G dialout $USER
 ```
 Then logout and login, or use `sg dialout -c "command"`.
-
-### Option 2: Development Mode (Legacy)
-
-If you prefer the old method with `requirements.txt`:
-
-```bash
-# Create virtual environment
-uv venv
-source .venv/bin/activate
-
-# Install dependencies
-uv pip install -r requirements.txt
-```
-
-**Note:** With the package installation (Option 1), you get a `gmc-geiger-mqtt` command that can be run from anywhere. See the [Migration Guide](MIGRATION.md) for more details.
 
 ## Configuration
 
@@ -124,16 +107,10 @@ Run the bridge in service mode with MQTT publishing:
 # Make sure MQTT broker is running (e.g., mosquitto)
 # and mqtt.enabled is set to true in config.yaml
 
-# Method 1: Using the installed entry point (recommended)
 gmc-geiger-mqtt
-
-# Method 2: Using the wrapper script (backwards compatible)
-python3 run.py
 
 # If not in dialout group, use sg:
 sg dialout -c "gmc-geiger-mqtt"
-# or
-sg dialout -c "python3 run.py"
 ```
 
 The service will:
@@ -149,7 +126,8 @@ Test serial communication without MQTT (set `mqtt.enabled: false` in config.yaml
 
 ```bash
 gmc-geiger-mqtt
-# or
+
+# If not in dialout group:
 sg dialout -c "gmc-geiger-mqtt"
 ```
 
@@ -176,9 +154,7 @@ Press Ctrl+C to stop.
 ```
 gmc-geiger-mqtt/
 ├── config.yaml           # Configuration file
-├── pyproject.toml        # Modern Python package configuration
-├── requirements.txt      # Dependencies (auto-generated from pyproject.toml)
-├── run.py                # Backwards-compatible wrapper script
+├── pyproject.toml        # Python package configuration
 ├── src/
 │   └── gmc_geiger_mqtt/  # Main package (note: underscore!)
 │       ├── __init__.py
@@ -202,7 +178,6 @@ gmc-geiger-mqtt/
 │   ├── test_cpm_debug.py # CPM reading debugging
 │   └── test_mqtt_messages.py # MQTT integration tests
 ├── ARCHITECTURE.md       # Detailed architecture documentation
-├── MIGRATION.md          # Migration guide for pyproject.toml structure
 └── GQ-RFC1801.txt        # GMC protocol specification
 ```
 
@@ -274,7 +249,7 @@ serial.setRTS(True)
 ### Permission denied on /dev/ttyUSB0
 ```bash
 sudo usermod -a -G dialout $USER
-# Then logout/login or use: sg dialout -c "python3 run.py"
+# Then logout/login or use: sg dialout -c "gmc-geiger-mqtt"
 ```
 
 ### Reading 0 CPM when device shows higher value
@@ -402,7 +377,7 @@ The project follows modern Python best practices:
 
 ### Project Structure
 
-See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation and [MIGRATION.md](MIGRATION.md) for information about the modern pyproject.toml structure.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation.
 
 ## Next Steps
 

@@ -20,7 +20,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Ruff for fast linting and code formatting
 - Makefile with common development tasks (test, lint, format, build, etc.)
 - `.editorconfig` for consistent code style across editors
-- Comprehensive migration guide: `MIGRATION.md`
 - Development section in README.md
 - Integrated tool configuration in pyproject.toml (pytest, coverage, ruff)
 
@@ -30,15 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Code formatting standardized with ruff
 
 ### Improved
-- Installation process: `uv pip install -e .` instead of `requirements.txt`
+- Installation process: `uv pip install -e .` for modern package installation
 - Distribution-ready: can be built and uploaded to PyPI
 - Better IDE and tool integration with modern package structure
 - Cleaner imports without `sys.path` manipulation
 
-### Backwards Compatibility
-- `run.py` wrapper script still works for existing workflows
-- `requirements.txt` maintained for backwards compatibility
-- All existing functionality preserved
+
 
 ## [0.1.0] - 2025-11-03
 
