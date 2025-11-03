@@ -14,6 +14,16 @@ von zigbee2mqtt in zusammenhang mit Homeassistant kennt.
 Das tty Gerät, sowie MQTT broker (host, port, user, password) sollen in einer config.yaml Datei
 gespeichert werden.
 
+Implementiert wird das ganze in Python. Wir machen daraus ein sauberes package mit pyproject.toml,
+entrypoint, tests (aber SPARSAM) etc.
+Das ganze soll als server laufen, also kein one-off script.
+Frequenz: 1 mal pro sekunde das gerät auslesen und den Messwert per MQTT publizieren.
+Parallel aber einen gleitenden Durchschnitt über ein vernünftiges Zeitfenster berechnen und alle
+10 Minuten publizieren.
+
+In späteren Versionen soll noch eine Web UI implementiert werden - das wird erstmal hinten
+angestellt, soll aber in der Architektur berücksichtigt werden.
+
 ## minimal code example
 ```python
 import serial

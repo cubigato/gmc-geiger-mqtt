@@ -1,0 +1,3 @@
+Write tests but don't overuse them.
+When asked to write web code you can use puppeteer to verify the UI, but don't overuse it as it uses a lot of resources.
+When changing something that changes what the software does or how it works make sure to update documentation and tests.
