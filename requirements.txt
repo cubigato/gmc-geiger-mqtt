@@ -1,0 +1,8 @@
+# Core dependencies
+pyserial>=3.5
+pyyaml>=6.0
+paho-mqtt>=1.6.1
+
+# Testing dependencies (optional)
+pytest>=7.4.0
+pytest-cov>=4.1.0

@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 import yaml
 
-from .models import DeviceConfig
+from .models import DeviceConfig, MQTTConfig
 
 
 logger = logging.getLogger(__name__)
@@ -138,23 +138,40 @@ class Config:
         """
         return self._data.get("sampling", {"interval": 60, "window_size": 10})
 
-    def get_mqtt_config(self) -> Dict[str, Any]:
+    def get_mqtt_config(self) -> MQTTConfig:
         """
         Get MQTT configuration.
 
         Returns:
-            Dictionary with MQTT settings
+            MQTTConfig object
         """
-        return self._data.get(
-            "mqtt",
-            {
-                "enabled": False,
-                "broker": "localhost",
-                "port": 1883,
-                "topic": "gmc/geiger",
-                "client_id": "gmc-geiger-mqtt",
-            },
+        mqtt_data = self._data.get("mqtt", {})
+        return MQTTConfig(
+            enabled=mqtt_data.get("enabled", False),
+            broker=mqtt_data.get("broker", "localhost"),
+            port=mqtt_data.get("port", 1883),
+            username=mqtt_data.get("username") or None,
+            password=mqtt_data.get("password") or None,
+            client_id=mqtt_data.get("client_id", "gmc-geiger-mqtt"),
+            topic_prefix=mqtt_data.get("topic_prefix", "gmc/geiger"),
+            qos_realtime=mqtt_data.get("qos_realtime", 0),
+            qos_aggregate=mqtt_data.get("qos_aggregate", 1),
+            qos_info=mqtt_data.get("qos_info", 1),
+            retain_info=mqtt_data.get("retain_info", True),
+            retain_availability=mqtt_data.get("retain_availability", True),
+            homeassistant_discovery=mqtt_data.get("homeassistant_discovery", False),
+            homeassistant_prefix=mqtt_data.get("homeassistant_prefix", "homeassistant"),
         )
+
+    def get_conversion_factor(self) -> float:
+        """
+        Get CPM to µSv/h conversion factor.
+
+        Returns:
+            Conversion factor
+        """
+        conversion_data = self._data.get("conversion", {})
+        return conversion_data.get("cpm_to_usv_factor", 0.0065)
 
     def get(self, key: str, default: Any = None) -> Any:
         """

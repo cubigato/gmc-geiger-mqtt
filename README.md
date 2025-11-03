@@ -4,7 +4,7 @@ A Python application for reading radiation data from GMC Geiger counters and pub
 
 ## Status
 
-**Current Phase:** ✅ Serial communication tested and working!
+**Current Phase:** ✅ Fully functional MQTT bridge!
 
 ✅ Implemented:
 - Serial communication with GMC devices (GQ-RFC1801 protocol)
@@ -13,30 +13,45 @@ A Python application for reading radiation data from GMC Geiger counters and pub
 - Device info retrieval (model, version, serial)
 - Configuration system (YAML-based)
 - Polling-only mode (no heartbeat)
-- Basic logging and test mode
+- **MQTT publishing** (realtime and aggregated)
+- **Moving average calculation** (configurable time window)
+- **Service mode** with automatic reconnection
+- **Home Assistant MQTT discovery**
+- Graceful shutdown handling
 
 🚧 Not yet implemented:
-- MQTT publishing
-- Moving average calculation
-- Continuous service mode
-- Home Assistant MQTT discovery
 - Web UI
+- Additional output plugins (InfluxDB, etc.)
 
 ## Requirements
 
 - Python 3.8+
 - GMC Geiger counter (tested with GMC-800 v1.10, should work with GMC-500/600 series)
 - USB connection to the device
+- MQTT broker (e.g., Mosquitto) - optional for MQTT features
 
 ## Installation
 
-1. Install dependencies:
+1. Clone the repository:
 ```bash
+git clone <repository-url>
 cd gmc-geiger-mqtt
+```
+
+2. Install dependencies using uv:
+```bash
+# Install uv if not already installed
+curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Create virtual environment and install dependencies
+uv venv
+source .venv/bin/activate  # On Linux/Mac
+# Or: .venv\Scripts\activate  # On Windows
+
 uv pip install -r requirements.txt
 ```
 
-2. Ensure your user has access to the serial port:
+3. Ensure your user has access to the serial port:
 ```bash
 sudo usermod -a -G dialout $USER
 ```
@@ -47,19 +62,45 @@ Then logout and login, or use `sg dialout -c "command"`.
 Edit `config.yaml`:
 
 ```yaml
+# Serial device configuration
 device:
   port: "/dev/ttyUSB0"
   baudrate: 115200      # GMC-800 uses 115200!
   timeout: 5.0
+
+# Sampling configuration
+sampling:
+  interval: 1           # Seconds between readings
+  aggregation_window: 600    # Moving average window (10 minutes)
+  aggregation_interval: 600  # Publish aggregated data every 10 minutes
+
+# MQTT configuration
+mqtt:
+  enabled: true         # Set to false for test mode (no MQTT)
+  broker: "localhost"
+  port: 1883
+  username: ""          # Leave empty for anonymous
+  password: ""
+  topic_prefix: "gmc/geiger"
+  homeassistant_discovery: true
+
+# Conversion factor
+conversion:
+  cpm_to_usv_factor: 0.0065  # Adjust for your device/tube
 ```
 
 **Critical:** Baudrate is **115200** for GMC-800, not 57600 as specified in GQ-RFC1801!
 
-## Testing
+## Usage
 
-Test serial communication:
+### Service Mode (with MQTT)
+
+Run the bridge in service mode with MQTT publishing:
 
 ```bash
+# Make sure MQTT broker is running (e.g., mosquitto)
+# and mqtt.enabled is set to true in config.yaml
+
 # If already in dialout group:
 python3 run.py
 
@@ -67,17 +108,34 @@ python3 run.py
 sg dialout -c "python3 run.py"
 ```
 
+The service will:
+- Connect to the GMC device and MQTT broker
+- Publish realtime CPM readings every second to `gmc/geiger/<device_id>/state`
+- Publish 10-minute averaged readings to `gmc/geiger/<device_id>/state_avg`
+- Register sensors in Home Assistant (if enabled)
+- Handle graceful shutdown on Ctrl+C or SIGTERM
+
+### Test Mode (without MQTT)
+
+Test serial communication without MQTT (set `mqtt.enabled: false` in config.yaml):
+
+```bash
+sg dialout -c "python3 run.py"
+```
+
 Expected output:
 ```
-2025-11-03 03:09:11 - src.gmc_device - INFO - Device info: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
 ======================================================================
-2025-11-03 03:09:11 - src.main - INFO - Connected to device: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
+Starting GMC Geiger test mode
+Device: /dev/ttyUSB0 @ 115200 baud
 ======================================================================
-2025-11-03 03:09:11 - src.main - INFO - Starting continuous reading mode (Ctrl+C to stop)...
+Connected to device: GMC Device: GMC-800Re (v1.10, serial=05004D323533AB)
 ======================================================================
-2025-11-03 03:09:11 - src.main - INFO - [   1] 03:09:11 | CPM:   19 | µSv/h: 0.1235
-2025-11-03 03:09:13 - src.main - INFO - [   2] 03:09:13 | CPM:   22 | µSv/h: 0.1430
-2025-11-03 03:09:15 - src.main - INFO - [   3] 03:09:15 | CPM:   21 | µSv/h: 0.1365
+Starting continuous reading mode (Ctrl+C to stop)...
+======================================================================
+[   1] 03:09:11 | CPM:   19 | µSv/h: 0.1235
+[   2] 03:09:13 | CPM:   22 | µSv/h: 0.1430
+[   3] 03:09:15 | CPM:   21 | µSv/h: 0.1365
 ...
 ```
 
@@ -92,11 +150,19 @@ gmc-geiger-mqtt/
 ├── run.py               # Main executable
 ├── src/
 │   ├── __init__.py
-│   ├── main.py          # Application entry point
+│   ├── main.py          # Application entry point (service & test mode)
 │   ├── config.py        # Configuration loader
 │   ├── gmc_device.py    # GMC device communication (polling-only)
-│   └── models.py        # Domain models (Reading, DeviceInfo, etc.)
+│   ├── models.py        # Domain models (Reading, DeviceInfo, MQTTConfig, etc.)
+│   ├── mqtt/            # MQTT client and publishing
+│   │   ├── client.py    # MQTT client wrapper with auto-reconnect
+│   │   ├── publisher.py # Publishing logic for readings
+│   │   └── discovery.py # Home Assistant MQTT discovery
+│   └── processing/      # Data processing
+│       └── aggregator.py # Moving average aggregator
 ├── tests/               # Unit tests
+│   ├── test_models.py
+│   └── test_aggregator.py
 ├── ARCHITECTURE.md      # Detailed architecture documentation
 └── GQ-RFC1801.txt       # GMC protocol specification
 ```
@@ -110,6 +176,9 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed documentation.
 - **4-byte CPM reading** - 32-bit unsigned integer, MSB first
 - **Clean separation** - Device, Processing, MQTT layers
 - **Configuration-driven** - All settings in config.yaml
+- **Moving average** - Configurable time window for noise reduction
+- **Home Assistant integration** - Automatic sensor discovery via MQTT
+- **Graceful shutdown** - Publishes offline status on exit
 
 ## Important Implementation Details
 
@@ -180,20 +249,74 @@ Try `test_serial.py` to test different baudrates:
 sg dialout -c "python3 test_serial.py"
 ```
 
+## MQTT Topics
+
+When running in service mode, the following MQTT topics are published:
+
+- `gmc/geiger/<device_id>/state` - Realtime CPM readings (every 1s)
+  ```json
+  {"cpm": 28, "usv_h": 0.182, "timestamp": "2024-01-15T10:30:45Z", "unit": "CPM"}
+  ```
+
+- `gmc/geiger/<device_id>/state_avg` - 10-minute averaged readings
+  ```json
+  {
+    "cpm_avg": 25.4, "cpm_min": 18, "cpm_max": 35,
+    "usv_h_avg": 0.1651, "window_minutes": 10,
+    "sample_count": 600, "timestamp": "2024-01-15T10:30:00Z", "unit": "CPM"
+  }
+  ```
+
+- `gmc/geiger/<device_id>/availability` - Online/offline status (retained)
+- `gmc/geiger/<device_id>/info` - Device information (retained)
+
+## Home Assistant Integration
+
+When `homeassistant_discovery: true` is set, the bridge automatically registers four sensors:
+
+1. **CPM** - Realtime counts per minute
+2. **Radiation Level** - Realtime radiation in µSv/h
+3. **CPM (10-min avg)** - Averaged counts per minute
+4. **Radiation Level (10-min avg)** - Averaged radiation in µSv/h
+
+No manual configuration needed - sensors appear automatically in Home Assistant!
+
 ## Next Steps
 
 1. ✅ Test serial communication
-2. ⏭️ Implement MQTT publishing
-3. Implement moving average calculation
-4. Add continuous service mode
-5. Add Home Assistant MQTT discovery
+2. ✅ Implement MQTT publishing
+3. ✅ Implement moving average calculation
+4. ✅ Add continuous service mode
+5. ✅ Add Home Assistant MQTT discovery
 6. Create proper Python package (pyproject.toml)
-7. Add systemd service
-8. Add Web UI (future)
+7. Add systemd service for autostart
+8. Add additional output plugins (InfluxDB, etc.)
+9. Add Web UI (future)
 
-## Testing During Development
+## Testing
 
-You can test individual components:
+### Unit Tests
+
+Run the unit test suite:
+
+```bash
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run all tests
+pytest tests/
+
+# Run with coverage
+pytest --cov=src tests/
+
+# Run specific test file
+pytest tests/test_models.py
+pytest tests/test_aggregator.py
+```
+
+### Manual Testing
+
+Test individual components:
 
 ```bash
 # Test serial with different baudrates
@@ -201,9 +324,21 @@ sg dialout -c "python3 test_serial.py"
 
 # Test CPM reading details
 sg dialout -c "python3 test_cpm_debug.py"
+```
 
-# Run unit tests
-pytest tests/
+### MQTT Testing
+
+Monitor MQTT messages:
+
+```bash
+# Subscribe to all topics
+mosquitto_sub -h localhost -t "gmc/geiger/#" -v
+
+# Subscribe to realtime readings only
+mosquitto_sub -h localhost -t "gmc/geiger/+/state"
+
+# Subscribe to averaged readings only
+mosquitto_sub -h localhost -t "gmc/geiger/+/state_avg"
 ```
 
 ## License
