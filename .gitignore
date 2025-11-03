@@ -65,7 +65,7 @@ Thumbs.db
 *~
 
 # Configuration (uncomment if you want to ignore local config)
-# config.yaml
+config.yaml
 
 # Development test images
 *.jpg
