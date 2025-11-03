@@ -1,0 +1,42 @@
+# GMC Geiger Counter MQTT Bridge Configuration
+
+# Serial device configuration
+device:
+  port: "/dev/ttyUSB0"
+  baudrate: 115200
+  timeout: 5.0 # seconds
+
+# Logging configuration
+logging:
+  level: "INFO" # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+
+# Sampling configuration
+sampling:
+  interval: 1 # seconds between readings (1s for realtime)
+  aggregation_window: 600 # seconds for moving average (10 minutes)
+  aggregation_interval: 600 # seconds between publishing aggregated data
+
+# MQTT configuration
+mqtt:
+  enabled: true
+  broker: "localhost" # Your MQTT broker hostname or IP
+  port: 1883
+  username: "" # Leave empty for anonymous
+  password: "" # Leave empty for anonymous
+  client_id: "gmc-geiger-mqtt"
+  topic_prefix: "gmc/geiger" # Base topic prefix
+  qos_realtime: 0 # QoS for realtime readings (0 = fire and forget)
+  qos_aggregate: 1 # QoS for aggregated readings (1 = at least once)
+  qos_info: 1 # QoS for device info (1 = at least once)
+  retain_info: true # Retain device info messages
+  retain_availability: true # Retain availability messages
+
+  # Home Assistant MQTT Discovery
+  homeassistant_discovery: true
+  homeassistant_prefix: "homeassistant" # HA discovery topic prefix
+
+# Conversion factor (CPM to µSv/h)
+# The M4011 tube conversion:
+conversion:
+  cpm_to_usv_factor: 0.0065 # Default conversion factor for M4011 tube
