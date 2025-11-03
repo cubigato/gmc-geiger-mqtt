@@ -320,6 +320,18 @@ When `homeassistant_discovery: true` is set, the bridge automatically registers 
 
 No manual configuration needed - sensors appear automatically in Home Assistant!
 
+### Screenshots
+
+#### Home Assistant Sensors
+
+![Home Assistant Integration](screen01.png)
+
+The bridge automatically creates four sensors in Home Assistant showing realtime and averaged radiation measurements.
+
+![History](screen02.png)
+
+Example of MQTT messages being published to the broker, showing realtime readings, averaged data, and device information.
+
 ## Development
 
 ### Setup Development Environment
