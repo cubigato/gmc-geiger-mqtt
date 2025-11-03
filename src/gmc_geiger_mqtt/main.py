@@ -9,14 +9,12 @@ import logging
 import signal
 import sys
 import time
-from pathlib import Path
 from typing import Optional
 
 from .config import Config, ConfigError
 from .gmc_device import GMCDevice, GMCDeviceError
-from .mqtt import MQTTClient, MQTTPublisher, HomeAssistantDiscovery
+from .mqtt import HomeAssistantDiscovery, MQTTClient, MQTTPublisher
 from .processing import MovingAverageAggregator
-
 
 # Global flag for graceful shutdown
 shutdown_requested = False
@@ -57,7 +55,7 @@ def test_device_reading(config: Config) -> int:
     logger = logging.getLogger(__name__)
 
     device_config = config.get_device_config()
-    logger.info(f"Starting GMC Geiger test mode")
+    logger.info("Starting GMC Geiger test mode")
     logger.info(f"Device: {device_config.port} @ {device_config.baudrate} baud")
 
     try:
@@ -131,9 +129,7 @@ def service_mode(config: Config) -> int:
     logger.info(f"Device: {device_config.port} @ {device_config.baudrate} baud")
     logger.info(f"MQTT: {mqtt_config.broker}:{mqtt_config.port}")
     logger.info(f"Sampling interval: {sampling_config.get('interval', 1)}s")
-    logger.info(
-        f"Aggregation window: {sampling_config.get('aggregation_window', 600)}s"
-    )
+    logger.info(f"Aggregation window: {sampling_config.get('aggregation_window', 600)}s")
     logger.info("=" * 70)
 
     mqtt_client: Optional[MQTTClient] = None

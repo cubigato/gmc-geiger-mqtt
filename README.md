@@ -32,23 +32,31 @@ A Python application for reading radiation data from GMC Geiger counters and pub
 
 ## Installation
 
+### Option 1: Install as Package (Recommended)
+
 1. Clone the repository:
 ```bash
 git clone <repository-url>
 cd gmc-geiger-mqtt
 ```
 
-2. Install dependencies using uv:
+2. Install using uv:
 ```bash
 # Install uv if not already installed
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Create virtual environment and install dependencies
+# Create virtual environment
 uv venv
+
+# Activate venv
 source .venv/bin/activate  # On Linux/Mac
 # Or: .venv\Scripts\activate  # On Windows
 
-uv pip install -r requirements.txt
+# Install package in editable mode
+uv pip install -e .
+
+# Or install with development dependencies (includes pytest, ruff, etc.)
+uv pip install -e ".[dev]"
 ```
 
 3. Ensure your user has access to the serial port:
@@ -56,6 +64,21 @@ uv pip install -r requirements.txt
 sudo usermod -a -G dialout $USER
 ```
 Then logout and login, or use `sg dialout -c "command"`.
+
+### Option 2: Development Mode (Legacy)
+
+If you prefer the old method with `requirements.txt`:
+
+```bash
+# Create virtual environment
+uv venv
+source .venv/bin/activate
+
+# Install dependencies
+uv pip install -r requirements.txt
+```
+
+**Note:** With the package installation (Option 1), you get a `gmc-geiger-mqtt` command that can be run from anywhere. See the [Migration Guide](MIGRATION.md) for more details.
 
 ## Configuration
 
@@ -101,10 +124,15 @@ Run the bridge in service mode with MQTT publishing:
 # Make sure MQTT broker is running (e.g., mosquitto)
 # and mqtt.enabled is set to true in config.yaml
 
-# If already in dialout group:
+# Method 1: Using the installed entry point (recommended)
+gmc-geiger-mqtt
+
+# Method 2: Using the wrapper script (backwards compatible)
 python3 run.py
 
-# Otherwise:
+# If not in dialout group, use sg:
+sg dialout -c "gmc-geiger-mqtt"
+# or
 sg dialout -c "python3 run.py"
 ```
 
@@ -120,7 +148,9 @@ The service will:
 Test serial communication without MQTT (set `mqtt.enabled: false` in config.yaml):
 
 ```bash
-sg dialout -c "python3 run.py"
+gmc-geiger-mqtt
+# or
+sg dialout -c "gmc-geiger-mqtt"
 ```
 
 Expected output:
@@ -146,32 +176,34 @@ Press Ctrl+C to stop.
 ```
 gmc-geiger-mqtt/
 ├── config.yaml           # Configuration file
-├── requirements.txt      # Python dependencies
-├── pytest.ini           # Pytest configuration (automated tests only)
-├── run.py               # Main executable
+├── pyproject.toml        # Modern Python package configuration
+├── requirements.txt      # Dependencies (auto-generated from pyproject.toml)
+├── run.py                # Backwards-compatible wrapper script
 ├── src/
-│   ├── __init__.py
-│   ├── main.py          # Application entry point (service & test mode)
-│   ├── config.py        # Configuration loader
-│   ├── gmc_device.py    # GMC device communication (polling-only)
-│   ├── models.py        # Domain models (Reading, DeviceInfo, MQTTConfig, etc.)
-│   ├── mqtt/            # MQTT client and publishing
-│   │   ├── client.py    # MQTT client wrapper with auto-reconnect
-│   │   ├── publisher.py # Publishing logic for readings
-│   │   └── discovery.py # Home Assistant MQTT discovery
-│   └── processing/      # Data processing
-│       └── aggregator.py # Moving average aggregator
-├── tests/               # Automated unit tests (no hardware required)
+│   └── gmc_geiger_mqtt/  # Main package (note: underscore!)
+│       ├── __init__.py
+│       ├── main.py       # Application entry point (service & test mode)
+│       ├── config.py     # Configuration loader
+│       ├── gmc_device.py # GMC device communication (polling-only)
+│       ├── models.py     # Domain models (Reading, DeviceInfo, MQTTConfig, etc.)
+│       ├── mqtt/         # MQTT client and publishing
+│       │   ├── client.py    # MQTT client wrapper with auto-reconnect
+│       │   ├── publisher.py # Publishing logic for readings
+│       │   └── discovery.py # Home Assistant MQTT discovery
+│       └── processing/   # Data processing
+│           └── aggregator.py # Moving average aggregator
+├── tests/                # Automated unit tests (no hardware required)
 │   ├── conftest.py
 │   ├── test_models.py
 │   └── test_aggregator.py
-├── manual_tests/        # Manual hardware tests (excluded from pytest)
-│   ├── README.md        # Documentation for manual tests
-│   ├── test_serial.py   # Serial communication tests
+├── manual_tests/         # Manual hardware tests (excluded from pytest)
+│   ├── README.md         # Documentation for manual tests
+│   ├── test_serial.py    # Serial communication tests
 │   ├── test_cpm_debug.py # CPM reading debugging
 │   └── test_mqtt_messages.py # MQTT integration tests
-├── ARCHITECTURE.md      # Detailed architecture documentation
-└── GQ-RFC1801.txt       # GMC protocol specification
+├── ARCHITECTURE.md       # Detailed architecture documentation
+├── MIGRATION.md          # Migration guide for pyproject.toml structure
+└── GQ-RFC1801.txt        # GMC protocol specification
 ```
 
 ## Architecture
@@ -288,6 +320,78 @@ When `homeassistant_discovery: true` is set, the bridge automatically registers 
 
 No manual configuration needed - sensors appear automatically in Home Assistant!
 
+## Development
+
+### Setup Development Environment
+
+```bash
+# Clone and navigate to repository
+git clone <repository-url>
+cd gmc-geiger-mqtt
+
+# Create virtual environment
+uv venv
+
+# Install with development dependencies
+uv pip install -e ".[dev]"
+```
+
+### Development Tools
+
+The project uses modern Python tooling:
+
+- **pytest** - Testing framework
+- **pytest-cov** - Test coverage reporting
+- **ruff** - Fast linting and formatting
+
+### Common Development Tasks
+
+```bash
+# Run all tests
+make test
+
+# Run tests with coverage
+make test-cov
+
+# Lint code
+make lint
+
+# Format code
+make format
+
+# Run all checks (lint + format-check + test)
+make check-all
+
+# Clean build artifacts
+make clean
+
+# Build distribution packages
+make build
+```
+
+Or use the commands directly:
+
+```bash
+pytest                                    # Run tests
+pytest --cov=src --cov-report=html       # With coverage
+ruff check src/ tests/                   # Lint
+ruff format src/ tests/                  # Format
+```
+
+### Code Quality
+
+The project follows modern Python best practices:
+
+- **PEP 8** style guide (enforced by ruff)
+- **Type hints** where applicable
+- **Docstrings** for all public APIs
+- **Unit tests** for core functionality
+- **Import sorting** with ruff
+
+### Project Structure
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed architecture documentation and [MIGRATION.md](MIGRATION.md) for information about the modern pyproject.toml structure.
+
 ## Next Steps
 
 1. ✅ Test serial communication
@@ -295,7 +399,7 @@ No manual configuration needed - sensors appear automatically in Home Assistant!
 3. ✅ Implement moving average calculation
 4. ✅ Add continuous service mode
 5. ✅ Add Home Assistant MQTT discovery
-6. Create proper Python package (pyproject.toml)
+6. ✅ Create proper Python package (pyproject.toml)
 7. Add systemd service for autostart
 8. Add additional output plugins (InfluxDB, etc.)
 9. Add Web UI (future)

@@ -1,9 +1,11 @@
 """Unit tests for MovingAverageAggregator."""
 
-import pytest
 from datetime import datetime, timedelta
-from src.models import Reading
-from src.processing.aggregator import MovingAverageAggregator
+
+import pytest
+
+from gmc_geiger_mqtt.models import Reading
+from gmc_geiger_mqtt.processing.aggregator import MovingAverageAggregator
 
 
 class TestMovingAverageAggregator:
@@ -122,9 +124,7 @@ class TestMovingAverageAggregator:
 
         aggregator.mark_published(timestamp)
         # Check 30 seconds later
-        assert (
-            aggregator.should_publish(timestamp + timedelta(seconds=30), 600) is False
-        )
+        assert aggregator.should_publish(timestamp + timedelta(seconds=30), 600) is False
 
     def test_should_publish_after_interval(self):
         """Test should_publish returns True after interval elapsed."""
@@ -133,9 +133,7 @@ class TestMovingAverageAggregator:
 
         aggregator.mark_published(timestamp)
         # Check 600 seconds later
-        assert (
-            aggregator.should_publish(timestamp + timedelta(seconds=600), 600) is True
-        )
+        assert aggregator.should_publish(timestamp + timedelta(seconds=600), 600) is True
 
     def test_mark_published(self):
         """Test mark_published updates last publication time."""
@@ -146,9 +144,7 @@ class TestMovingAverageAggregator:
         # Should not publish immediately after marking
         assert aggregator.should_publish(timestamp, 600) is False
         # Should publish after interval
-        assert (
-            aggregator.should_publish(timestamp + timedelta(seconds=601), 600) is True
-        )
+        assert aggregator.should_publish(timestamp + timedelta(seconds=601), 600) is True
 
     def test_get_window_age_empty(self):
         """Test get_window_age with no samples."""
@@ -204,9 +200,7 @@ class TestMovingAverageAggregator:
 
         # Add samples
         for i in range(5):
-            reading = Reading(
-                cpm=20 + i * 2, timestamp=timestamp + timedelta(seconds=i)
-            )
+            reading = Reading(cpm=20 + i * 2, timestamp=timestamp + timedelta(seconds=i))
             aggregator.add_reading(reading)
 
         result = aggregator.get_aggregated()

@@ -1,13 +1,15 @@
 """Unit tests for domain models."""
 
-import pytest
 from datetime import datetime
-from src.models import (
-    Reading,
-    DeviceInfo,
-    DeviceConfig,
-    MQTTConfig,
+
+import pytest
+
+from gmc_geiger_mqtt.models import (
     AggregatedReading,
+    DeviceConfig,
+    DeviceInfo,
+    MQTTConfig,
+    Reading,
 )
 
 

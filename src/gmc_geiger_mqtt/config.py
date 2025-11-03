@@ -2,13 +2,11 @@
 
 import logging
 import os
-from pathlib import Path
 from typing import Any, Dict, Optional
 
 import yaml
 
 from .models import DeviceConfig, MQTTConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +54,7 @@ class Config:
                 logger.info(f"Found config file at: {path}")
                 return path
 
-        raise ConfigError(
-            f"No configuration file found. Searched: {', '.join(search_paths)}"
-        )
+        raise ConfigError(f"No configuration file found. Searched: {', '.join(search_paths)}")
 
     def load(self) -> None:
         """
@@ -69,14 +65,14 @@ class Config:
         """
         try:
             logger.info(f"Loading configuration from: {self.config_path}")
-            with open(self.config_path, "r") as f:
+            with open(self.config_path) as f:
                 self._data = yaml.safe_load(f) or {}
-        except FileNotFoundError:
-            raise ConfigError(f"Config file not found: {self.config_path}")
+        except FileNotFoundError as e:
+            raise ConfigError(f"Config file not found: {self.config_path}") from e
         except yaml.YAMLError as e:
-            raise ConfigError(f"Invalid YAML in config file: {e}")
+            raise ConfigError(f"Invalid YAML in config file: {e}") from e
         except Exception as e:
-            raise ConfigError(f"Failed to load config: {e}")
+            raise ConfigError(f"Failed to load config: {e}") from e
 
         self._validate()
 

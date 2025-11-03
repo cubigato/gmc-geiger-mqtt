@@ -2,12 +2,11 @@
 
 import logging
 import time
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 import paho.mqtt.client as mqtt
 
 from ..models import MQTTConfig
-
 
 logger = logging.getLogger(__name__)
 
@@ -58,15 +57,11 @@ class MQTTClient:
             MQTTClientError: If connection fails
         """
         try:
-            logger.info(
-                f"Connecting to MQTT broker at {self.config.broker}:{self.config.port}"
-            )
+            logger.info(f"Connecting to MQTT broker at {self.config.broker}:{self.config.port}")
 
             # Debug: Log authentication info (password masked)
             if self.config.username:
-                logger.debug(
-                    f"Using MQTT authentication: username='{self.config.username}'"
-                )
+                logger.debug(f"Using MQTT authentication: username='{self.config.username}'")
             else:
                 logger.debug("Using anonymous MQTT connection (no username/password)")
 
@@ -84,9 +79,7 @@ class MQTTClient:
 
             # Set username and password if provided
             if self.config.username:
-                logger.debug(
-                    f"Setting MQTT credentials for user: {self.config.username}"
-                )
+                logger.debug(f"Setting MQTT credentials for user: {self.config.username}")
                 self._client.username_pw_set(self.config.username, self.config.password)
 
             # Set Last Will and Testament (LWT) for availability

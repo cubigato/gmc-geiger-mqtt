@@ -6,9 +6,9 @@ and publishing it via MQTT.
 
 __version__ = "0.1.0"
 
-from .models import Reading, DeviceInfo, DeviceConfig
-from .gmc_device import GMCDevice, GMCDeviceError, GMCConnectionError, GMCCommandError
 from .config import Config, ConfigError
+from .gmc_device import GMCCommandError, GMCConnectionError, GMCDevice, GMCDeviceError
+from .models import DeviceConfig, DeviceInfo, Reading
 
 __all__ = [
     "Reading",

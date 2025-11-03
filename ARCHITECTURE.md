@@ -1150,40 +1150,13 @@ signal.signal(signal.SIGTERM, signal_handler)
 
 ### 9.1 Dependency Management
 
-**Aktuell**: Die Anwendung verwendet `requirements.txt` für Dependency Management:
-
-```txt
-# Core dependencies
-pyserial>=3.5
-pyyaml>=6.0
-paho-mqtt>=1.6.1
-
-# Testing dependencies (optional)
-pytest>=7.4.0
-pytest-cov>=4.1.0
-```
-
-**Installation mit uv**:
-```bash
-# Create virtual environment
-uv venv
-
-# Activate venv
-source .venv/bin/activate  # Linux/Mac
-# Or: .venv\Scripts\activate  # Windows
-
-# Install dependencies
-uv pip install -r requirements.txt
-```
-
-**Entry Point**: Die Anwendung wird über `run.py` gestartet:
-```bash
-python3 run.py
-```
-
-**Zukünftig (optional)**: Migration zu `pyproject.toml` für moderneren Python-Paketbau:
+**Aktuell**: Die Anwendung verwendet `pyproject.toml` für modernes Python Packaging (PEP 517/518/621):
 
 ```toml
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "gmc-geiger-mqtt"
 version = "0.1.0"
@@ -1199,51 +1172,68 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
+    "ruff>=0.1.0",
 ]
 
 [project.scripts]
-gmc-geiger-mqtt = "src.main:main"
-
-[build-system]
-requires = ["setuptools>=61.0"]
-build-backend = "setuptools.build_meta"
+gmc-geiger-mqtt = "gmc_geiger_mqtt.main:main"
 ```
 
-Dies würde ermöglichen:
+**Paketstruktur**:
+```
+gmc-geiger-mqtt/
+├── src/
+│   └── gmc_geiger_mqtt/    # Note: underscore (import name)
+│       ├── __init__.py
+│       ├── main.py
+│       ├── ...
+├── pyproject.toml
+└── run.py                  # Backwards-compatible wrapper
+```
+
+**Installation mit uv** (empfohlen):
 ```bash
-pip install -e .
-gmc-geiger-mqtt  # Direkt ausführbar
+# Create virtual environment
+uv venv
+
+# Activate venv
+source .venv/bin/activate  # Linux/Mac
+# Or: .venv\Scripts\activate  # Windows
+
+# Install package in editable mode
+uv pip install -e .
+
+# Or with development dependencies
+uv pip install -e ".[dev]"
 ```
 
-### 9.2 Systemd Service (Linux)
+**Entry Points**:
+```bash
+# Method 1: Using installed entry point (recommended)
+gmc-geiger-mqtt
 
-```ini
-[Unit]
-Description=GMC Geiger Counter MQTT Bridge
-After=network.target
+# Method 2: Using Python module
+python3 -m gmc_geiger_mqtt.main
 
-[Service]
-Type=simple
-User=geiger
-Group=dialout
-WorkingDirectory=/opt/gmc-geiger-mqtt
-ExecStart=/opt/gmc-geiger-mqtt/.venv/bin/gmc-geiger-mqtt --config /etc/gmc-geiger-mqtt/config.yaml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
+# Method 3: Backwards-compatible wrapper
+python3 run.py
 ```
 
-### 9.3 Docker Support (Optional)
+**Build und Distribution**:
+```bash
+# Build wheel and sdist
+python -m build
 
-```dockerfile
-FROM python:3.11-slim
-WORKDIR /app
-COPY . .
-RUN pip install --no-cache-dir .
-CMD ["gmc-geiger-mqtt", "--config", "/config/config.yaml"]
+# Install from wheel
+pip install dist/gmc_geiger_mqtt-0.1.0-py3-none-any.whl
 ```
+
+**Tool-Konfiguration**: Alle Tool-Settings sind in `pyproject.toml` integriert:
+- `[tool.pytest.ini_options]` - Pytest-Konfiguration
+- `[tool.coverage.*]` - Coverage-Settings
+- `[tool.ruff.*]` - Linting und Formatierung
+
+Siehe [MIGRATION.md](MIGRATION.md) für Details zur Migration von `requirements.txt`.
 
 ## 10. Testing-Strategie (sparsam)
 
@@ -1356,20 +1346,6 @@ logger.info(
 - Langzeit-Trends
 - Export zu InfluxDB/Prometheus
 
-### 12.2 Plugin-Architektur (Future)
-
-```python
-class ReadingHandler(ABC):
-    @abstractmethod
-    def handle_reading(self, reading: Reading) -> None:
-        pass
-
-# Plugins
-class MQTTHandler(ReadingHandler): ...
-class InfluxDBHandler(ReadingHandler): ...
-class WebSocketHandler(ReadingHandler): ...
-```
-
 ## 13. Deployment-Checklist
 
 - [ ] Config file angelegt und angepasst
@@ -1377,8 +1353,6 @@ class WebSocketHandler(ReadingHandler): ...
 - [ ] Baudrate korrekt für Device-Modell (GMC-800 = 115200)
 - [ ] MQTT Broker erreichbar
 - [ ] Home Assistant MQTT Integration konfiguriert
-- [ ] Systemd Service installiert (falls Linux)
-- [ ] Logs rotieren konfiguriert
 - [ ] CPM → µSv/h Conversion Factor korrekt für Tube-Typ
 
 ## 14. Known Issues und Workarounds

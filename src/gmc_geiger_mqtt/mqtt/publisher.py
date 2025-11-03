@@ -2,11 +2,9 @@
 
 import json
 import logging
-from typing import Optional
 
-from ..models import Reading, AggregatedReading, DeviceInfo, MQTTConfig
+from ..models import AggregatedReading, DeviceInfo, MQTTConfig, Reading
 from .client import MQTTClient
-
 
 logger = logging.getLogger(__name__)
 

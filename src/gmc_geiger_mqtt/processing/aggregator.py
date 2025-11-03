@@ -5,8 +5,7 @@ from collections import deque
 from datetime import datetime, timedelta
 from typing import Optional
 
-from ..models import Reading, AggregatedReading
-
+from ..models import AggregatedReading, Reading
 
 logger = logging.getLogger(__name__)
 
@@ -58,8 +57,7 @@ class MovingAverageAggregator:
         self._clean_old_samples(reading.timestamp)
 
         logger.debug(
-            f"Added reading (CPM={reading.cpm}), "
-            f"window now contains {len(self._samples)} samples"
+            f"Added reading (CPM={reading.cpm}), window now contains {len(self._samples)} samples"
         )
 
     def _clean_old_samples(self, current_time: datetime) -> None:
@@ -75,8 +73,7 @@ class MovingAverageAggregator:
         while self._samples and self._samples[0].timestamp < cutoff_time:
             removed = self._samples.popleft()
             logger.debug(
-                f"Removed old sample from {removed.timestamp.isoformat()} "
-                f"(CPM={removed.cpm})"
+                f"Removed old sample from {removed.timestamp.isoformat()} (CPM={removed.cpm})"
             )
 
     def get_aggregated(self) -> Optional[AggregatedReading]:
@@ -188,7 +185,5 @@ class MovingAverageAggregator:
     def __str__(self) -> str:
         """String representation of aggregator state."""
         return (
-            f"MovingAverageAggregator("
-            f"window={self.window_seconds}s, "
-            f"samples={len(self._samples)})"
+            f"MovingAverageAggregator(window={self.window_seconds}s, samples={len(self._samples)})"
         )

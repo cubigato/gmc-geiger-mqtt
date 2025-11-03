@@ -2,11 +2,10 @@
 
 import json
 import logging
-from typing import Dict, Any
+from typing import Any, Dict
 
 from ..models import DeviceInfo, MQTTConfig
 from .client import MQTTClient
-
 
 logger = logging.getLogger(__name__)
 
@@ -83,9 +82,7 @@ class HomeAssistantDiscovery:
 
     def _publish_cpm_sensor(self) -> None:
         """Publish discovery for realtime CPM sensor."""
-        discovery_topic = (
-            f"{self.config.homeassistant_prefix}/sensor/{self.device_id}/cpm/config"
-        )
+        discovery_topic = f"{self.config.homeassistant_prefix}/sensor/{self.device_id}/cpm/config"
 
         state_topic = self.config.get_topic(self.device_id, "state")
         availability_topic = self.config.get_topic(self.device_id, "availability")
@@ -107,8 +104,7 @@ class HomeAssistantDiscovery:
     def _publish_radiation_sensor(self) -> None:
         """Publish discovery for realtime radiation level sensor (µSv/h)."""
         discovery_topic = (
-            f"{self.config.homeassistant_prefix}/sensor/"
-            f"{self.device_id}/radiation/config"
+            f"{self.config.homeassistant_prefix}/sensor/{self.device_id}/radiation/config"
         )
 
         state_topic = self.config.get_topic(self.device_id, "state")
@@ -155,8 +151,7 @@ class HomeAssistantDiscovery:
     def _publish_avg_radiation_sensor(self) -> None:
         """Publish discovery for average radiation level sensor."""
         discovery_topic = (
-            f"{self.config.homeassistant_prefix}/sensor/"
-            f"{self.device_id}/radiation_avg/config"
+            f"{self.config.homeassistant_prefix}/sensor/{self.device_id}/radiation_avg/config"
         )
 
         state_topic = self.config.get_topic(self.device_id, "state_avg")
@@ -207,8 +202,7 @@ class HomeAssistantDiscovery:
         sensors = ["cpm", "radiation", "cpm_avg", "radiation_avg"]
         for sensor in sensors:
             discovery_topic = (
-                f"{self.config.homeassistant_prefix}/sensor/"
-                f"{self.device_id}/{sensor}/config"
+                f"{self.config.homeassistant_prefix}/sensor/{self.device_id}/{sensor}/config"
             )
             try:
                 self.client.publish(

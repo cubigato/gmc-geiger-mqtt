@@ -6,13 +6,12 @@ for reading data from GMC Geiger counter devices.
 
 import logging
 import time
+from datetime import datetime
 from typing import Optional
 
 import serial
 
 from .models import DeviceConfig, DeviceInfo, Reading
-from datetime import datetime
-
 
 logger = logging.getLogger(__name__)
 
@@ -151,9 +150,7 @@ class GMCDevice:
         try:
             data = self.serial.read(num_bytes)
             if len(data) != num_bytes:
-                raise GMCCommandError(
-                    f"Expected {num_bytes} bytes, got {len(data)} bytes"
-                )
+                raise GMCCommandError(f"Expected {num_bytes} bytes, got {len(data)} bytes")
             logger.debug(f"Received {len(data)} bytes: {data}")
             return data
         except serial.SerialException as e:

@@ -4,6 +4,42 @@ All notable changes to the GMC Geiger Counter MQTT Bridge project.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.0] - 2025-11-03
+
+### Changed
+- **BREAKING**: Migrated to modern `pyproject.toml` structure (PEP 517/518/621)
+- Package name convention: `gmc-geiger-mqtt` (distribution) vs `gmc_geiger_mqtt` (import)
+- Moved source from `src/` to `src/gmc_geiger_mqtt/` for proper package structure
+- Updated all imports from `src.*` to `gmc_geiger_mqtt.*`
+- Replaced `pytest.ini` with `[tool.pytest.ini_options]` in `pyproject.toml`
+- Build system changed from setuptools to hatchling (faster, modern)
+
+### Added
+- Entry point: `gmc-geiger-mqtt` command available after installation
+- Development dependencies as optional extras: `pip install -e ".[dev]"`
+- Ruff for fast linting and code formatting
+- Makefile with common development tasks (test, lint, format, build, etc.)
+- `.editorconfig` for consistent code style across editors
+- Comprehensive migration guide: `MIGRATION.md`
+- Development section in README.md
+- Integrated tool configuration in pyproject.toml (pytest, coverage, ruff)
+
+### Fixed
+- Exception chaining in config.py for better error tracing
+- Import sorting and organization across all modules
+- Code formatting standardized with ruff
+
+### Improved
+- Installation process: `uv pip install -e .` instead of `requirements.txt`
+- Distribution-ready: can be built and uploaded to PyPI
+- Better IDE and tool integration with modern package structure
+- Cleaner imports without `sys.path` manipulation
+
+### Backwards Compatibility
+- `run.py` wrapper script still works for existing workflows
+- `requirements.txt` maintained for backwards compatibility
+- All existing functionality preserved
+
 ## [0.1.0] - 2025-11-03
 
 ### Added
