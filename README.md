@@ -2,25 +2,6 @@
 
 A Python application for reading radiation data from GMC Geiger counters and publishing it via MQTT.
 
-## ⚠️ Home Assistant 2025.11 Users - Important!
-
-If your radiation level (µSv/h) sensors show **"Unavailable"** after upgrading Home Assistant to 2025.11:
-
-```bash
-# Quick fix - update and restart the bridge:
-cd gmc-geiger-mqtt
-git pull
-gmc-geiger-mqtt  # Restart the bridge
-```
-
-**What happened?** Home Assistant 2025.11 enforces stricter device_class validation. The `irradiance` device class only accepts W/m² (solar), not µSv/h (ionizing radiation). We've removed the incompatible device_class.
-
-**Your data is safe!** Historical data is preserved. Sensors will work as generic numeric sensors with the radioactive icon.
-
-See [UPGRADE.md](UPGRADE.md) for detailed instructions or [CHANGELOG.md](CHANGELOG.md#unreleased) for technical details.
-
----
-
 ## Status
 
 **Current Phase:** ✅ Fully functional MQTT bridge!
