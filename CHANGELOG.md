@@ -4,6 +4,25 @@ All notable changes to the GMC Geiger Counter MQTT Bridge project.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [0.2.1] - 2025-11-28
+
+### Fixed
+- **Home Assistant 2025.11 Compatibility**: Removed `device_class: "irradiance"` from radiation level sensors
+  - The `irradiance` device class only accepts W/m² (solar irradiance), not µSv/h (ionizing radiation)
+  - Home Assistant 2025.11+ enforces stricter device_class/unit validation
+  - Radiation sensors now appear as generic numeric sensors with `state_class: measurement`
+  - Historical data and sensor functionality preserved (same unique_id and state_topic)
+  - CPM sensors unaffected (never had device_class)
+
+### Changed
+- Updated HOMEASSISTANT.md documentation to reflect device_class changes
+
+### Added
+- UPGRADE.md with detailed migration instructions for Home Assistant 2025.11 users
+- manual_tests/test_discovery_payloads.py to verify MQTT discovery messages
+- Migration guide in HOMEASSISTANT.md for users upgrading from HA 2025.10
+- Quick fix notice in README.md for affected users
+
 ## [0.2.0] - 2025-11-03
 
 ### Changed

@@ -118,7 +118,6 @@ class HomeAssistantDiscovery:
             "unit_of_measurement": "µSv/h",
             "icon": "mdi:radioactive",
             "state_class": "measurement",
-            "device_class": "irradiance",
             "device": self._get_device_dict(),
             "availability_topic": availability_topic,
         }
@@ -165,7 +164,6 @@ class HomeAssistantDiscovery:
             "unit_of_measurement": "µSv/h",
             "icon": "mdi:radioactive",
             "state_class": "measurement",
-            "device_class": "irradiance",
             "device": self._get_device_dict(),
             "availability_topic": availability_topic,
         }

@@ -11,12 +11,54 @@ The bridge automatically discovers and registers 4 sensors in Home Assistant:
 3. **CPM (10-min avg)** - 10-minute moving average of CPM
 4. **Radiation Level (10-min avg)** - 10-minute moving average in µSv/h
 
+> **Note:** Since Home Assistant 2025.11, the radiation level sensors no longer use the `irradiance` device class, as it only supports solar irradiance units (W/m²), not ionizing radiation units (µSv/h). The sensors now appear as generic numeric sensors with the radioactive icon.
+
 All sensors include:
 - ✅ Availability tracking (online/offline)
 - ✅ Device information (model, firmware, serial number)
 - ✅ Proper icons (`mdi:radioactive`)
 - ✅ State classes for historical tracking
 - ✅ Device grouping (all sensors under one device)
+
+## Migration from Home Assistant 2025.10 → 2025.11
+
+If you upgraded Home Assistant from 2025.10.x to 2025.11.x and your radiation level sensors show "Unavailable":
+
+### Quick Fix
+
+1. **Update the gmc-geiger-mqtt bridge**:
+   ```bash
+   cd gmc-geiger-mqtt
+   git pull
+   # Or manually update src/gmc_geiger_mqtt/mqtt/discovery.py
+   ```
+
+2. **Restart the bridge**:
+   ```bash
+   # Stop the running bridge (Ctrl+C)
+   # Start it again
+   gmc-geiger-mqtt
+   ```
+
+3. **Wait for discovery** (automatic):
+   - The bridge will republish MQTT discovery messages on startup
+   - Home Assistant will update the sensor definitions automatically
+   - Sensors should become available within 30 seconds
+
+4. **Check sensors in Home Assistant**:
+   - Navigate to: Settings → Devices & Services → MQTT
+   - Find your GMC Geiger device
+   - Both radiation level sensors should now show values
+
+**What changed?**
+- Removed `device_class: "irradiance"` from radiation sensors (incompatible with µSv/h)
+- Sensors now appear as generic numeric sensors with `state_class: measurement`
+- Your historical data is preserved (same entity IDs and state topics)
+- CPM sensors were unaffected
+
+**No manual configuration needed!** The MQTT discovery system handles everything automatically.
+
+---
 
 ## Prerequisites
 
@@ -94,7 +136,7 @@ Alternatively, you can search for "GMC" or "Geiger" in the device list.
 - **Update**: Every 1 second
 - **Use**: Converted radiation dose rate
 - **MQTT Topic**: `gmc/geiger/<device_id>/state`
-- **Device Class**: `irradiance`
+- **Device Class**: None (generic numeric sensor)
 
 **Example value**: 0.182 µSv/h
 
@@ -117,7 +159,7 @@ Alternatively, you can search for "GMC" or "Geiger" in the device list.
 - **Update**: Every 10 minutes
 - **Use**: Smoothed radiation dose average
 - **MQTT Topic**: `gmc/geiger/<device_id>/state_avg`
-- **Device Class**: `irradiance`
+- **Device Class**: None (generic numeric sensor)
 
 **Example value**: 0.1651 µSv/h (averaged over 10 minutes)
 
@@ -255,7 +297,7 @@ mqtt:
       value_template: "{{ value_json.usv_h }}"
       unit_of_measurement: "µSv/h"
       icon: "mdi:radioactive"
-      device_class: "irradiance"
+      state_class: "measurement"
       availability_topic: "gmc/geiger/05004d323533ab/availability"
       
     - name: "GMC CPM"
@@ -270,7 +312,7 @@ mqtt:
       value_template: "{{ value_json.usv_h_avg }}"
       unit_of_measurement: "µSv/h"
       icon: "mdi:radioactive"
-      device_class: "irradiance"
+      state_class: "measurement"
       availability_topic: "gmc/geiger/05004d323533ab/availability"
       
     - name: "GMC CPM (10-min avg)"
