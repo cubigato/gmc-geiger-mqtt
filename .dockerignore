@@ -1,0 +1,8 @@
+*
+!Dockerfile
+!pyproject.toml
+!README.md
+!LICENSE.txt
+!src/
+!src/**
+**/__pycache__/

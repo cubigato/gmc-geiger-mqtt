@@ -1229,6 +1229,19 @@ pip install dist/gmc_geiger_mqtt-0.1.0-py3-none-any.whl
 - `[tool.coverage.*]` - Coverage-Settings
 - `[tool.ruff.*]` - Linting und Formatierung
 
+### 9.2 Container-Deployment
+
+Das `Dockerfile` installiert das Python-Paket auf Basis von Debian 13 slim.
+Das Laufzeit-Image startet den Paket-Entry-Point direkt als unprivilegierter
+Benutzer und erhält `SIGTERM` beim Stoppen durch die Container-Engine.
+Die Konfiguration wird schreibgeschützt unter
+`/etc/gmc-geiger-mqtt/config.yaml` eingehängt. Die Engine reicht das serielle
+Host-Gerät als `/dev/ttyUSB0` mit Lese- und Schreibzugriff durch. Die Bridge
+baut eine ausgehende Verbindung zum MQTT-Broker auf.
+
+Build, Registry und Geräteberechtigungen sind in der
+[Anleitung für Linux-Container](README.md#container-on-linux) beschrieben.
+
 ## 10. Testing-Strategie (sparsam)
 
 ### 10.1 Unit Tests

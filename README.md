@@ -99,6 +99,101 @@ conversion:
 
 ## Usage
 
+### Container on Linux
+
+The image uses Python 3.12 on Debian 13 slim. Build it locally with Podman
+using the package version from `pyproject.toml` as the tag.
+
+```bash
+image=localhost/gmc-geiger-mqtt:0.2.1
+podman build --pull=always --tag "$image" .
+sh tests/test_container.sh "$image"
+```
+
+The smoke test uses `/dev/null` to check startup, configuration loading and
+device mapping without a Geiger counter or MQTT broker.
+
+To publish the image, set `registry` to your registry host, including its
+port if needed.
+
+```bash
+registry=registry.example.com
+remote_image="$registry/${image#localhost/}"
+podman login "$registry"
+podman tag "$image" "$remote_image"
+podman push "$remote_image"
+```
+
+Connect the counter to the Linux host that runs the container engine. Find
+its serial port with `ls -l /dev/ttyUSB* /dev/serial/by-id/`. If the device has
+a `/dev/serial/by-id/` symlink, use its full path as `device` below so the host
+can find it even if the `ttyUSB` number changes. The container always sees it
+as `/dev/ttyUSB0`, which should match `device.port` in `config.yaml`.
+
+```bash
+test -e config.yaml || cp config.example.yaml config.yaml
+device=/dev/ttyUSB0
+ls -l "$device"
+```
+
+Set `mqtt.broker` to an address reachable from the container. `localhost`
+refers to the container itself. With Docker on Linux, a broker listening on
+the host's bridge address can be reached at `host.docker.internal` if you add
+`--add-host=host.docker.internal:host-gateway` to `docker run`. A broker in
+another container can be reached by name on a shared user-defined network.
+
+#### Docker Engine
+
+On a standard rootful Docker Engine on Linux, run the bridge with your UID
+and GID so it can read the configuration file. Add the device's numeric host
+GID as a supplementary group to grant serial access. See the [Docker run reference](https://docs.docker.com/reference/cli/docker/container/run/#device).
+
+For a published image, set `registry` to your registry host and use the pull
+commands below. For a local Docker build, set `image` to
+`localhost/gmc-geiger-mqtt:0.2.1` and run `docker build -t "$image" .` before
+running the container.
+
+```bash
+registry=registry.example.com
+image="$registry/gmc-geiger-mqtt:0.2.1"
+docker login "$registry"
+docker pull "$image"
+```
+
+```bash
+docker run -d --name gmc-geiger-mqtt --restart unless-stopped \
+  --device "$device:/dev/ttyUSB0:rw" \
+  --user "$(id -u):$(id -g)" --group-add "$(stat -Lc '%g' "$device")" \
+  --mount "type=bind,src=$PWD/config.yaml,dst=/etc/gmc-geiger-mqtt/config.yaml,readonly" \
+  "$image"
+docker logs -f gmc-geiger-mqtt
+```
+
+#### Rootless Podman
+
+The user running Podman needs read and write access to the host device. If it
+belongs to `dialout`, use `sudo usermod -aG dialout "$USER"` and log out and back
+in before starting Podman. With the `crun` runtime, `--group-add keep-groups`
+passes those host group permissions through to the container. See the [Podman run reference](https://docs.podman.io/en/latest/markdown/podman-run.1.html#group-add-group-keep-groups).
+
+Use the local image from the build step. To pull a published image, set
+`registry` to the registry host and `image` to the full image reference.
+Then run `podman login "$registry"` and `podman pull "$image"`.
+
+```bash
+podman run -d --name gmc-geiger-mqtt --restart unless-stopped \
+  --runtime crun --userns=keep-id --group-add keep-groups \
+  --device "$device:/dev/ttyUSB0:rw" \
+  --mount "type=bind,src=$PWD/config.yaml,dst=/etc/gmc-geiger-mqtt/config.yaml,readonly" \
+  "$image"
+podman logs -f gmc-geiger-mqtt
+```
+
+For a serial smoke test, set `mqtt.enabled: false` before starting and check
+the container logs for the detected GMC model and CPM readings. After unplugging
+the counter, check the host device path and recreate the container once the
+device is back so the engine can map the current device node.
+
 ### Service Mode (with MQTT)
 
 Run the bridge in service mode with MQTT publishing:
